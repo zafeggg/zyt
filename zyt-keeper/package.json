@@ -1,0 +1,19 @@
+{
+  "name": "zyt-keeper",
+  "version": "1.0.0",
+  "description": "众赢币 ZYT - 链下服务（Keeper 快照 / 索引 / 账本 / 告警 / API），方案 v6",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.js",
+    "snapshot": "node scripts/snapshot-now.js",
+    "reconcile": "node scripts/reconcile.js",
+    "indexer": "node src/indexer.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "ethers": "^6.13.4",
+    "mysql2": "^3.24.2",
+    "node-cron": "^3.0.3"
+  }
+}
