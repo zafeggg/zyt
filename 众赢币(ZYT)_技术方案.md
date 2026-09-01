@@ -622,17 +622,22 @@ mapping(address => uint256) public userIndex;       // 去重索引
 1. **合约线**：9 合约开发完成；两轮审计 17 + 9 项全部闭环；44/44 单测全绿（含白名单/快照价/卖出统计/复投重置/分红强制卖出回归用例）
 2. **前端线**：Vue3 + Vant 全页面（首页/兑换/记录/社区 + 底部导航）；TP 钱包内置 DApp 访问（EIP-6963 + 静默恢复会话）；keeper API 优先 + 合约直连降级
 3. **链下服务线**：keeper 8 项生产缺口全闭合（签名钱包 / 双实例互斥锁 / 真对账 / 监控规则引擎 / MySQL 持久化 / API 加固 / 强制卖出追踪 / 前端接 API）
+4. **BSC testnet 部署 + 冒烟 v2 全绿**（2026-09-01，第五套干净链 45/45 断言 PASS）：
+   - P0-P6 真实链上全链路：入金（addLiquidity+deposit）→ 每日快照触发（通缩 2%、释放 10万/日、分红 2100万）→ 产出领取 → 分红领取 → 卖出（5% 滑点 30/30/40）→ 转账视同卖出（10% 税）
+   - 关键机制实测通过：快照基准价锁定（1e13→1.0142857e13）、动态额度 USDT 折算（v8 修复）、非白名单卖出统计/强制卖出 hook、白名单豁免边界（黑洞收款方不入用户列表）
+   - 第五套部署地址见 `zyt-contracts/scripts/smoke-testnet.js` 头注释；完整结论与踩坑经验记录于项目 memory（2026-09-01.md）
 
 **下一步**（按顺序）：
-1. **BSC testnet 部署**：走 deploy.js 全链路（含启动接线 b2 四项），验证阶段门控/白名单/快照价/keeper 对接（≥3 轮集成测试）
-2. **上线准备**：Gnosis Safe 多签（营销 + 技术地址）、第三方审计（CertiK / SlowMist / Beosin）、参数核对表、GoPlus 自检
-3. **P3 收尾**：8 项低危按需处理（转账余额边界 / LP 永锁披露 / pause 语义 / snapshotTime 未用 / setUint 关系校验 / downlineCount 死代码 / dailyBurn 记账截断 / keeper 漏快照失真）
-4. **前端生产构建 + 部署**：非沙箱 `npx vite build` 刷新 dist，上传并更新 `?v=` 缓存参数
+1. **bscscan 源码验证**：testnet 9 合约 + ZYTCompute 库逐一对 Etherscan 提交源码验证（需 BSCSCAN_API_KEY），锁定部署产物可审计性
+2. **keeper 对接 testnet**：zkeeper 连接第五套部署（RPC/合约地址/签名钱包），跑 2-4 周稳定性试运行，验证对账/监控/快照触发链路
+3. **上线准备**：Gnosis Safe 多签（营销 + 技术地址）、第三方审计（CertiK / SlowMist / Beosin）、参数核对表、GoPlus 自检
+4. **P3 收尾**：8 项低危按需处理（转账余额边界 / LP 永锁披露 / pause 语义 / snapshotTime 未用 / setUint 关系校验 / downlineCount 死代码 / dailyBurn 记账截断 / keeper 漏快照失真）
+5. **前端生产构建 + 部署**：非沙箱 `npx vite build` 刷新 dist，上传并更新 `?v=` 缓存参数
 
 **上线前**（必做）：
 1. 第三方安全审计
 2. 法律合规审查
-3. testnet 试运行 2-4 周（含 Keeper 稳定性与额度/滑点/白名单/快照价机制验证）
+3. testnet 试运行 2-4 周（冒烟已验业务链路；试运行阶段重点验证 Keeper 稳定性与额度/滑点/白名单/快照价机制长期运行）
 4. 链下账本与链上对账演练（含 userList 交叉校验）
 
 ---
