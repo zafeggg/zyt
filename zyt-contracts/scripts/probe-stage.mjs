@@ -1,0 +1,13 @@
+import { JsonRpcProvider, Contract } from "ethers";
+const RPC = "https://bsc-testnet-rpc.publicnode.com";
+const CONFIG_ADDR = "0x62a96b2880fD282BC0984db800057F1CDFe2873C";
+const POOL_ADDR = "0x701A4A0cF59a05ada702e9b8b572b46e50F70726";
+const p = new JsonRpcProvider(RPC, 97);
+const cfg = new Contract(CONFIG_ADDR, ["function poolStage1USDT() view returns (uint256)","function poolStage2USDT() view returns (uint256)"], p);
+const pool = new Contract(POOL_ADDR, ["function poolUSDT() view returns (uint256)","function getStage() view returns (uint256)","function snapshotPrice() view returns (uint256)"], p);
+const [s1, s2, pu, st, sp] = await Promise.all([cfg.poolStage1USDT(), cfg.poolStage2USDT(), pool.poolUSDT(), pool.getStage(), pool.snapshotPrice()]);
+console.log("poolStage1USDT =", (Number(s1)/1e18).toFixed(2), "U");
+console.log("poolStage2USDT =", (Number(s2)/1e18).toFixed(2), "U");
+console.log("poolUSDT       =", (Number(pu)/1e18).toFixed(4), "U");
+console.log("getStage()     =", Number(st));
+console.log("snapshotPrice  =", Number(sp));
