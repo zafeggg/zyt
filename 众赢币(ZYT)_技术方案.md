@@ -626,10 +626,17 @@ mapping(address => uint256) public userIndex;       // 去重索引
    - P0-P6 真实链上全链路：入金（addLiquidity+deposit）→ 每日快照触发（通缩 2%、释放 10万/日、分红 2100万）→ 产出领取 → 分红领取 → 卖出（5% 滑点 30/30/40）→ 转账视同卖出（10% 税）
    - 关键机制实测通过：快照基准价锁定（1e13→1.0142857e13）、动态额度 USDT 折算（v8 修复）、非白名单卖出统计/强制卖出 hook、白名单豁免边界（黑洞收款方不入用户列表）
    - 第五套部署地址见 `zyt-contracts/scripts/smoke-testnet.js` 头注释；完整结论与踩坑经验记录于项目 memory（2026-09-01.md）
+5. **keeper 对接 testnet 完成**（2026-09-01）：
+   - 链上：keeperAddress → 签名钱包 `0xdFA5…480`（独立私钥仅作定时触发器）；tBNB 0.01 到账
+   - `.env` 切第五套（chainId 97 / publicnode RPC / 6 合约地址 / START_BLOCK=128482000 / MySQL zyt_keeper 库）
+   - 服务 5 模块全启动：indexer（幂等重放 13 事件）/ ledger（rebuild users=1）/ keeper（cron `0 0 * * *` = 北京 08:00）/ monitor（R1-R5）/ forcesell / API :8080
+   - 真对账通过：链上 userList 1 用户与链下账本一致；API /health /stats /user /power 数据与冒烟结果精确吻合（withdraw_total=9.6357U = P5 卖出值）
+   - **修复数据污染 bug（v9）**：ledger.rebuild 的 SELECT 未按 chain_id 过滤，本地 hardhat（31337）残留事件混入 users 账本（users=4 含 3 幽灵用户）→ totalPower 失真；已加 `WHERE chain_id=?` 并清库重放，users=1 干净
+   - 快照写交易链路验证：签名钱包 dailySnapshot 进入 estimateGas 后 revert `"Deflation: once per day"`（今天快照已被冒烟消耗）——revert 消息发生在 keeper 门控之后，证明 keeperAddress 权限生效；真实触发待次日 08:00 cron
 
 **下一步**（按顺序）：
-1. **bscscan 源码验证**：testnet 9 合约 + ZYTCompute 库逐一对 Etherscan 提交源码验证（需 BSCSCAN_API_KEY），锁定部署产物可审计性
-2. **keeper 对接 testnet**：zkeeper 连接第五套部署（RPC/合约地址/签名钱包），跑 2-4 周稳定性试运行，验证对账/监控/快照触发链路
+1. **bscscan 源码验证**：testnet 9 合约 + ZYTCompute 库逐一对 Etherscan 提交源码验证（需用户在 `zyt-contracts/.env` 填入 BSCSCAN_API_KEY 后运行 `npx hardhat run scripts/verify-all-testnet.js --network bscTestnet`），锁定部署产物可审计性
+2. **keeper 稳定性试运行**（2-4 周）：重点观察明日 08:00 起 cron 每日真实触发快照、对账/监控/告警长跑、MySQL 持久化（events/users/pool_state/snapshots 随运行增长）
 3. **上线准备**：Gnosis Safe 多签（营销 + 技术地址）、第三方审计（CertiK / SlowMist / Beosin）、参数核对表、GoPlus 自检
 4. **P3 收尾**：8 项低危按需处理（转账余额边界 / LP 永锁披露 / pause 语义 / snapshotTime 未用 / setUint 关系校验 / downlineCount 死代码 / dailyBurn 记账截断 / keeper 漏快照失真）
 5. **前端生产构建 + 部署**：非沙箱 `npx vite build` 刷新 dist，上传并更新 `?v=` 缓存参数
