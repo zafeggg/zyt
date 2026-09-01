@@ -20,8 +20,10 @@ export class Ledger {
   async rebuild() {
     const db = await getDb();
     await db.exec("DELETE FROM users;");
+    // v9 修复：按 chain_id 过滤重放——防本地联调（31337）与 testnet 事件混入同一张 events 表
+    // 污染 users 账本与 totalPower（曾导致 users=4：3 个 hardhat 幽灵用户 + 1 个 testnet 真实用户）
     const rows = await db
-      .all("SELECT name, from_addr, to_addr, amount, extra FROM events ORDER BY block, log_index");
+      .all("SELECT name, from_addr, to_addr, amount, extra FROM events WHERE chain_id=? ORDER BY block, log_index", [CONFIG.chainId]);
     const upsertSql = `
       INSERT INTO users (address, deposit_total, withdraw_total, dynamic_quota, dynamic_withdrawn, power_base, power_day, is_exited, updated_at)
       VALUES (?,?,?,?,?,?,?,?,?)
