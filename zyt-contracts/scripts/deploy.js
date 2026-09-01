@@ -18,6 +18,24 @@ const GST_POOL = 21_000n * 10n ** 18n;          // 底池 2.1 万枚
 const ZYT_MAX = 2_100_000_000n * 10n ** 18n;    // 21 亿
 const BLACK_HOLE = "0x000000000000000000000000000000000000dEaD";
 
+/**
+ * @notice 等待链上授权到位（BSC testnet 公共 RPC 多节点最终一致性：
+ *         approve 交易确认后，estimateGas 可能打到未同步节点读到 allowance=0 → revert）。
+ *         轮询读取直到 allowance >= min，再继续后续依赖该授权的调用。
+ */
+async function waitAllowance(token, owner, spender, min, label, retries = 15) {
+  for (let i = 0; i < retries; i++) {
+    const a = await token.allowance(owner, spender);
+    if (a >= min) {
+      console.log(`allowance ${label} 已同步: ${ethers.formatUnits(a, 18)}`);
+      return;
+    }
+    console.log(`allowance ${label} 未同步(${ethers.formatUnits(a, 18)})，2s 后重试 ${i + 1}/${retries}`);
+    await new Promise((r) => setTimeout(r, 2000));
+  }
+  throw new Error(`allowance ${label} 同步超时（>${retries * 2}s）`);
+}
+
 async function main() {
   const [deployer] = await ethers.getSigners();
   console.log("Deployer:", deployer.address);
@@ -166,6 +184,9 @@ async function main() {
       );
     }
   }
+  // 等待授权同步（公共 RPC 最终一致性，防 initialize 模拟执行读到 allowance=0 而 revert）
+  await waitAllowance(gst, deployer.address, poolAddr, GST_POOL, "GST");
+  if (useMockUsdt) await waitAllowance(usdt, deployer.address, poolAddr, GST_POOL, "USDT");
   await pool.initialize(GST_POOL, ZYT_MAX);
   console.log("Pool initialized: GST=%s ZYT=%s", GST_POOL.toString(), ZYT_MAX.toString());
 
