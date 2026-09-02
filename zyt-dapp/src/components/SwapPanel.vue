@@ -102,15 +102,21 @@ async function loadWhitelist() {
   }
 }
 
-watch(address, async (a) => {
-  if (a) {
-    setSigner(await getSigner());
-    await loadWhitelist();
-    await loadBalance();
-  } else {
-    isWhitelisted.value = null;
-  }
-});
+watch(
+  address,
+  async (a) => {
+    if (a) {
+      setSigner(await getSigner());
+      await loadWhitelist();
+      await loadBalance();
+    } else {
+      isWhitelisted.value = null;
+    }
+  },
+  // v12：immediate——组件挂载时 address 可能已非空（先连接后进页面），
+  // 默认不立即触发会导致 setSigner 从未执行、入金报 NOT_CONNECTED
+  { immediate: true }
+);
 
 watch(mode, () => loadBalance());
 

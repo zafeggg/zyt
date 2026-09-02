@@ -2,6 +2,7 @@ import { ref, computed } from "vue";
 import { BrowserProvider, Contract, formatUnits, type Signer } from "ethers";
 import { currentChain } from "../config";
 import { useWalletStore } from "../store/wallet";
+import { setSigner } from "./useContracts";
 
 const ERC20_MIN_ABI = [
   "function balanceOf(address) view returns (uint256)",
@@ -137,6 +138,8 @@ async function connectWith(opt: WalletOption): Promise<void> {
   activeProvider = opt.provider;
   address.value = accounts[0];
   useWalletStore().setAddress(accounts[0]);
+  // v12：同 connect()，立即注入 signer
+  setSigner(await new BrowserProvider(opt.provider).getSigner());
 }
 
 export function useWallet() {
@@ -151,6 +154,8 @@ export function useWallet() {
     activeProvider = provider;
     address.value = accounts[0];
     store.setAddress(accounts[0]);
+    // v12：连接成功后立即注入 signer（防 SwapPanel 等组件在 address 已非空时才挂载、watch 不触发导致 NOT_CONNECTED）
+    setSigner(await new BrowserProvider(provider).getSigner());
   }
 
   async function switchChain(): Promise<boolean> {
@@ -217,6 +222,8 @@ export function useWallet() {
         activeProvider = provider;
         address.value = accounts[0];
         store.setAddress(accounts[0]);
+        // v12：静默恢复成功也注入 signer
+        setSigner(await new BrowserProvider(provider).getSigner());
       }
     } catch {
       /* 未授权/无钱包，静默忽略 */
