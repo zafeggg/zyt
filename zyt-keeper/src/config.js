@@ -13,9 +13,12 @@ export const CONFIG = {
     forceSell: process.env.FORCESELL_ADDR || "",
   },
   keeper: {
-    // v7：每日 08:00 北京时间 = UTC 0 点（cron 按 UTC 写，不依赖服务器时区）
-    // 触发后由 retryTimes/retryDelayMs 覆盖 08:00-08:10 重试窗口
+    // v7：每日 08:00 北京时间 = UTC 0 点
+    // v10 修复：node-cron 默认按「系统时区」解释 cron 表达式——本地 Windows 是 Asia/Shanghai，
+    // 会导致触发时刻错位（北京时间 00:00 而非 08:00）。现显式指定 cron 时区为 UTC，
+    // "0 0 * * *" 严格 = UTC 00:00 = 北京 08:00，不再依赖服务器时区。
     snapshotCron: process.env.SNAPSHOT_CRON || "0 0 * * *",
+    snapshotCronTz: process.env.SNAPSHOT_CRON_TZ || "UTC",
     retryTimes: Number(process.env.RETRY_TIMES || 3),
     retryDelayMs: Number(process.env.RETRY_DELAY_MS || 30000),
     // 签名钱包私钥：用于触发每日快照等写交易（dailySnapshot）

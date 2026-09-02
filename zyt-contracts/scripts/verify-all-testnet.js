@@ -7,6 +7,16 @@
  */
 require("dotenv").config();
 
+// ===== 网络代理注入（国内直连 api.etherscan.io 会被阻断，V1→V2 后走统一域名） =====
+// VERIFY_PROXY 默认本机 7890（Clash 类）；设 VERIFY_PROXY=off 可跳过注入。
+// undici setGlobalDispatcher 影响所有 fetch（etherscan API + RPC 均走代理，实测代理对两者均连通）。
+const PROXY = process.env.VERIFY_PROXY !== undefined ? process.env.VERIFY_PROXY : "http://127.0.0.1:7890";
+if (PROXY && PROXY !== "off") {
+  const { ProxyAgent, setGlobalDispatcher } = require("undici");
+  setGlobalDispatcher(new ProxyAgent(PROXY));
+  console.log(`[proxy] fetch dispatcher -> ${PROXY}`);
+}
+
 const BLACK_HOLE = "0x000000000000000000000000000000000000dEaD";
 
 // 第五套部署地址（2026-09-01）
@@ -35,12 +45,12 @@ const TASKS = [
   // 3. 单依赖
   { name: "ZYTForceSell", addr: ADDR.forceSell, args: [ADDR.zyt] },
   { name: "ZYTPoolManager", addr: ADDR.pool, args: [ADDR.config, ADDR.zyt, ADDR.usdt, ADDR.gst] },
-  // 4. 多依赖 + 库链接
+  // 4. 多依赖 + 库链接（ZYTCompute 定义在独立文件 contracts/ZYTCompute.sol，全限定名必须带正确文件路径）
   {
     name: "ZYTMining",
     addr: ADDR.mining,
     args: [ADDR.config, ADDR.pool, ADDR.referral, ADDR.zyt, ADDR.usdt],
-    libraries: { "contracts/ZYTMining.sol:ZYTCompute": ADDR.compute },
+    libraries: { "contracts/ZYTCompute.sol:ZYTCompute": ADDR.compute },
   },
   { name: "ZYTDeflation", addr: ADDR.deflation, args: [ADDR.config, ADDR.pool, ADDR.mining] },
 ];

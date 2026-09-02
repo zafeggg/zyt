@@ -131,10 +131,14 @@ export class Keeper {
 
   start() {
     const expr = CONFIG.keeper.snapshotCron;
-    cron.schedule(expr, () => this.runSnapshot());
+    // v10：显式指定 cron 时区为 UTC（"0 0 * * *" = 北京 08:00），防系统时区漂移；
+    // 保留 task 引用防 GC 导致定时任务丢失
+    this.cronTask = cron.schedule(expr, () => this.runSnapshot(), {
+      timezone: CONFIG.keeper.snapshotCronTz,
+    });
     const signerState = this.signerReady
       ? `signer=${this.signerAddress}`
       : "signer=NOT_CONFIGURED (写交易将拒绝)";
-    logRun("keeper", "start", `cron="${expr}" (${Intl.DateTimeFormat().resolvedOptions().timeZone}) ${signerState}`);
+    logRun("keeper", "start", `cron="${expr}" tz=${CONFIG.keeper.snapshotCronTz} ${signerState}`);
   }
 }

@@ -37,11 +37,10 @@ module.exports = {
       accounts: process.env.PRIVATE_KEY ? [process.env.PRIVATE_KEY] : [],
     },
   },
+  // Etherscan V2 API 迁移（hardhat-verify 2.1.0+）：统一单一 apiKey，
+  // per-network map 会走已废弃的 V1 端点（bscscan 报 "deprecated V1 endpoint"）
   etherscan: {
-    apiKey: {
-      bscTestnet: process.env.BSCSCAN_API_KEY || "",
-      bsc: process.env.BSCSCAN_API_KEY || "",
-    },
+    apiKey: process.env.BSCSCAN_API_KEY || "",
   },
   paths: {
     sources: "./contracts",
