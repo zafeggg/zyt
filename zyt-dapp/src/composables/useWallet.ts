@@ -88,6 +88,57 @@ async function resolveWallet(): Promise<{ provider: any; name: string; source: s
   throw new Error("NO_WALLET");
 }
 
+/** 钱包选项（供选择弹窗展示） */
+export interface WalletOption {
+  provider: any;
+  name: string;
+  rdns: string;
+  icon?: string;
+  source: "eip6963" | "ethereum";
+}
+
+/**
+ * 列举可选钱包（v12：多钱包选择）
+ * - EIP-6963 发现的钱包全量列出（MetaMask / TokenPocket / 其他插件按安装顺序）
+ * - 兜底 window.ethereum：若其标识(isMetaMask/isTokenPocket)未被 EIP-6963 覆盖则追加
+ */
+async function listWallets(): Promise<WalletOption[]> {
+  if (!eipReady) await discoverEIP6963();
+  const opts: WalletOption[] = eipProviders.map((p) => ({
+    provider: p.provider,
+    name: p.info.name,
+    rdns: p.info.rdns,
+    icon: p.info.icon,
+    source: "eip6963" as const,
+  }));
+  // window.ethereum 兜底（插件版未广播 EIP-6963 或老版本）
+  const w = (window as any).ethereum;
+  if (w) {
+    const legacyName = w.isTokenPocket ? "TokenPocket" : w.isMetaMask ? "MetaMask" : null;
+    const dup = opts.some((o) => o.name.toLowerCase() === (legacyName || "unknown").toLowerCase());
+    if (!dup) {
+      opts.push({
+        provider: w,
+        name: legacyName || "Browser Wallet",
+        rdns: "",
+        source: "ethereum",
+      });
+    }
+  }
+  return opts;
+}
+
+/** 用指定钱包连接（用户在选择弹窗中点选后调用） */
+async function connectWith(opt: WalletOption): Promise<void> {
+  const accounts = await opt.provider.request({ method: "eth_requestAccounts" });
+  if (!accounts || accounts.length === 0) {
+    throw new Error("USER_REJECTED");
+  }
+  activeProvider = opt.provider;
+  address.value = accounts[0];
+  useWalletStore().setAddress(accounts[0]);
+}
+
 export function useWallet() {
   const store = useWalletStore();
 
@@ -195,6 +246,8 @@ export function useWallet() {
     address,
     shortAddress,
     connect,
+    connectWith,
+    listWallets,
     switchChain,
     getProvider,
     getSigner,

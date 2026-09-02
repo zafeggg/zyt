@@ -15,6 +15,7 @@
         size="small"
         type="primary"
         class="connect-btn"
+        :loading="connecting"
         @click="handleConnect"
       >
         {{ $t("common.connect") }}
@@ -24,6 +25,14 @@
         {{ shortAddress }}
       </div>
     </div>
+    <!-- 多钱包选择弹窗（v12：MetaMask / TokenPocket 并存时由用户点选） -->
+    <WalletSelectModal
+      :show="showSelect"
+      :loading="connecting"
+      :wallets="wallets"
+      @select="onSelectWallet"
+      @close="closeSelect"
+    />
   </div>
 </template>
 
@@ -31,11 +40,18 @@
 import { ref, computed, onMounted } from "vue";
 import { showToast } from "vant";
 import { useI18n } from "vue-i18n";
-import { useWallet } from "../composables/useWallet";
+import { useWallet, type WalletOption } from "../composables/useWallet";
+import WalletSelectModal from "./WalletSelectModal.vue";
 import { setLocale } from "../i18n";
 
 const { t } = useI18n();
-const { address, shortAddress, connect, restoreSession, listenAccountChange } = useWallet();
+const { address, shortAddress, connect, connectWith, listWallets, restoreSession, listenAccountChange } =
+  useWallet();
+
+// v12：多钱包选择状态
+const showSelect = ref(false);
+const connecting = ref(false);
+const wallets = ref<WalletOption[]>([]);
 
 const langs = [
   { value: "zh-CN", label: "简体中文" },
@@ -54,13 +70,44 @@ function changeLang(v: string) {
 
 async function handleConnect() {
   try {
+    // v12：先列举可选钱包——多个则弹选择框（MetaMask/TokenPocket 并存时让用户点选），
+    // 单个或零个走原自动逻辑（连接报错由下方统一提示）
+    connecting.value = true;
+    const opts = await listWallets();
+    connecting.value = false;
+    if (opts.length > 1) {
+      wallets.value = opts;
+      showSelect.value = true;
+      return;
+    }
     await connect();
     showToast({ type: "success", message: t("common.connected") });
   } catch (e: any) {
+    connecting.value = false;
     const msg =
       e?.message === "NO_WALLET" ? t("common.noWallet") : e?.message === "USER_REJECTED" ? t("common.rejected") : t("common.noWallet");
     showToast({ type: "fail", message: msg });
   }
+}
+
+/** 用户在弹窗中点选钱包 */
+async function onSelectWallet(w: WalletOption) {
+  showSelect.value = false;
+  connecting.value = true;
+  try {
+    await connectWith(w);
+    showToast({ type: "success", message: t("common.connected") });
+  } catch (e: any) {
+    const msg =
+      e?.message === "USER_REJECTED" ? t("common.rejected") : t("common.noWallet");
+    showToast({ type: "fail", message: msg });
+  } finally {
+    connecting.value = false;
+  }
+}
+
+function closeSelect() {
+  showSelect.value = false;
 }
 
 async function copyAddr() {

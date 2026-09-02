@@ -14,6 +14,12 @@ export default {
     noWallet: "No wallet detected, please open in TokenPocket / MetaMask",
     rejected: "Connection cancelled",
   },
+  wallet: {
+    selectWallet: "Select Wallet",
+    detecting: "Detecting wallets...",
+    notFound: "No wallet detected. Please install MetaMask / TokenPocket extension",
+    hint: "Choose a wallet to connect",
+  },
   home: {
     title: "ZYT",
     totalSupply: "Total Supply",

@@ -14,6 +14,12 @@ export default {
     noWallet: "未偵測到錢包，請在 TokenPocket / MetaMask 內開啟",
     rejected: "已取消連線",
   },
+  wallet: {
+    selectWallet: "選擇錢包",
+    detecting: "正在檢測錢包...",
+    notFound: "未檢測到錢包，請確認已安裝 MetaMask / TokenPocket 擴充功能",
+    hint: "選擇要連接的錢包",
+  },
   home: {
     title: "眾贏幣",
     totalSupply: "總供應量",

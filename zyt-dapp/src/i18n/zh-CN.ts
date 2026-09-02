@@ -12,6 +12,12 @@ export default {
     noWallet: "未检测到钱包，请在 TokenPocket / MetaMask 内打开",
     rejected: "已取消连接",
   },
+  wallet: {
+    selectWallet: "选择钱包",
+    detecting: "正在检测钱包...",
+    notFound: "未检测到钱包，请确认已安装 MetaMask / TokenPocket 扩展",
+    hint: "选择要连接的钱包",
+  },
   home: {
     title: "众赢币",
     totalSupply: "总供应量",
