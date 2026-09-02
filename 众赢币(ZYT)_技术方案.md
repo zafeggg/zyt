@@ -640,7 +640,7 @@ mapping(address => uint256) public userIndex;       // 去重索引
 7. **快照真实成功路径打通**（2026-09-02）：签名钱包 `0xdFA5…` 手动触发 dailySnapshot 成功上链（day=20698、totalPower=500、snapshotCount=2）——通缩 2% 生效（poolZYT 2058930→2017751.4 万）、价格自洽上移、MySQL snapshots 表落库、keeper_runs 记录 ok
 
 **下一步**（按顺序）：
-1. **keeper 稳定性试运行**（2-4 周）：cron 已显式 timezone=UTC（`0 0 * * *` = 北京 08:00）；**本地 Windows 后台不适合跨天长跑**（夜间休眠致进程冻结/僵死，今晨已实证），试运行应部署至阿里云服务器（47.96.29.183）pm2 常驻；publicnode 的 BSC testnet getLogs 历史窗口仅数小时，keeper 停机超过该窗口需将 START_BLOCK 重推至最新块（`.env` 注释已记）
+1. **keeper 稳定性试运行**（2-4 周，**本地运行模式**）：cron 已显式 timezone=UTC（`0 0 * * *` = 北京 08:00）；ZYT 项目独立运营、不使用 GYT 服务器，keeper 在本地 Windows 常驻。已知约束：①夜间休眠可能冻结进程（需保持电脑唤醒或手动重启 keeper）；②publicnode 的 BSC testnet getLogs 历史窗口仅数小时，停机超过该窗口需将 START_BLOCK 重推至最新块（`.env` 注释已记）
 2. **上线准备**：Gnosis Safe 多签（营销 + 技术地址）、第三方审计（CertiK / SlowMist / Beosin）、参数核对表、GoPlus 自检
 3. **P3 收尾**：8 项低危按需处理（转账余额边界 / LP 永锁披露 / pause 语义 / snapshotTime 未用 / setUint 关系校验 / downlineCount 死代码 / dailyBurn 记账截断 / keeper 漏快照失真）
 4. **前端生产构建 + 部署**：非沙箱 `npx vite build` 刷新 dist，上传并更新 `?v=` 缓存参数
