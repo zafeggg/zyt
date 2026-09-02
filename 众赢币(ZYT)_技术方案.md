@@ -616,7 +616,7 @@ mapping(address => uint256) public userIndex;       // 去重索引
 
 ---
 
-## 8. 当前进度与下一步（2026-09-01 更新）
+## 8. 当前进度与下一步（2026-09-02 更新）
 
 **已完成**：
 1. **合约线**：9 合约开发完成；两轮审计 17 + 9 项全部闭环；44/44 单测全绿（含白名单/快照价/卖出统计/复投重置/分红强制卖出回归用例）
@@ -633,13 +633,17 @@ mapping(address => uint256) public userIndex;       // 去重索引
    - 真对账通过：链上 userList 1 用户与链下账本一致；API /health /stats /user /power 数据与冒烟结果精确吻合（withdraw_total=9.6357U = P5 卖出值）
    - **修复数据污染 bug（v9）**：ledger.rebuild 的 SELECT 未按 chain_id 过滤，本地 hardhat（31337）残留事件混入 users 账本（users=4 含 3 幽灵用户）→ totalPower 失真；已加 `WHERE chain_id=?` 并清库重放，users=1 干净
    - 快照写交易链路验证：签名钱包 dailySnapshot 进入 estimateGas 后 revert `"Deflation: once per day"`（今天快照已被冒烟消耗）——revert 消息发生在 keeper 门控之后，证明 keeperAddress 权限生效；真实触发待次日 08:00 cron
+6. **bscscan 源码验证 9/9 全绿**（2026-09-02，第五套 9 合约 + ZYTCompute 库全部 `Successfully verified`）：
+   - V2 迁移三连修：hardhat-verify 2.0.11→2.1.3（3.x 需 Hardhat3 不兼容）；`etherscan.apiKey` 改单一字符串（per-network map 走废弃 V1 端点）；库链接全限定名修正 `contracts/ZYTCompute.sol:ZYTCompute`（库在独立文件）
+   - 网络修复：环境 `http_proxy=63374`（WorkBuddy 内部代理）对 etherscan 返回 502 → 运行时覆盖 `http_proxy=http://127.0.0.1:7890`（本机 Clash）+ 脚本内 undici ProxyAgent 注入
+   - 9 个合约页 `#code` 标签全部可查（地址见 verify-all-testnet.js），部署产物可审计性锁定
+7. **快照真实成功路径打通**（2026-09-02）：签名钱包 `0xdFA5…` 手动触发 dailySnapshot 成功上链（day=20698、totalPower=500、snapshotCount=2）——通缩 2% 生效（poolZYT 2058930→2017751.4 万）、价格自洽上移、MySQL snapshots 表落库、keeper_runs 记录 ok
 
 **下一步**（按顺序）：
-1. **bscscan 源码验证**：testnet 9 合约 + ZYTCompute 库逐一对 Etherscan 提交源码验证（需用户在 `zyt-contracts/.env` 填入 BSCSCAN_API_KEY 后运行 `npx hardhat run scripts/verify-all-testnet.js --network bscTestnet`），锁定部署产物可审计性
-2. **keeper 稳定性试运行**（2-4 周）：重点观察明日 08:00 起 cron 每日真实触发快照、对账/监控/告警长跑、MySQL 持久化（events/users/pool_state/snapshots 随运行增长）
-3. **上线准备**：Gnosis Safe 多签（营销 + 技术地址）、第三方审计（CertiK / SlowMist / Beosin）、参数核对表、GoPlus 自检
-4. **P3 收尾**：8 项低危按需处理（转账余额边界 / LP 永锁披露 / pause 语义 / snapshotTime 未用 / setUint 关系校验 / downlineCount 死代码 / dailyBurn 记账截断 / keeper 漏快照失真）
-5. **前端生产构建 + 部署**：非沙箱 `npx vite build` 刷新 dist，上传并更新 `?v=` 缓存参数
+1. **keeper 稳定性试运行**（2-4 周）：cron 已显式 timezone=UTC（`0 0 * * *` = 北京 08:00）；**本地 Windows 后台不适合跨天长跑**（夜间休眠致进程冻结/僵死，今晨已实证），试运行应部署至阿里云服务器（47.96.29.183）pm2 常驻；publicnode 的 BSC testnet getLogs 历史窗口仅数小时，keeper 停机超过该窗口需将 START_BLOCK 重推至最新块（`.env` 注释已记）
+2. **上线准备**：Gnosis Safe 多签（营销 + 技术地址）、第三方审计（CertiK / SlowMist / Beosin）、参数核对表、GoPlus 自检
+3. **P3 收尾**：8 项低危按需处理（转账余额边界 / LP 永锁披露 / pause 语义 / snapshotTime 未用 / setUint 关系校验 / downlineCount 死代码 / dailyBurn 记账截断 / keeper 漏快照失真）
+4. **前端生产构建 + 部署**：非沙箱 `npx vite build` 刷新 dist，上传并更新 `?v=` 缓存参数
 
 **上线前**（必做）：
 1. 第三方安全审计
