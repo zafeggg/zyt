@@ -42,18 +42,21 @@ const LOCAL: ChainConfig = {
 const BSC_TESTNET: ChainConfig = {
   name: "BSC Testnet",
   chainId: 97,
-  rpc: "https://data-seed-prebsc-1-s1.bnbchain.org:8545",
-  apiBase: "", // testnet 部署后填 keeper API 地址
+  rpc: "https://bsc-testnet-rpc.publicnode.com",
+  // v11：testnet 联调接入本地 keeper（API 优先；keeper 断 → 合约直连降级）
+  apiBase: "http://localhost:8080",
   contracts: {
-    config: "",
-    gst: "",
-    zyt: "",
-    forceSell: "",
-    pool: "",
-    referral: "",
-    mining: "",
-    deflation: "",
-    usdt: "0x337610d27c682E347C9cD60BD4b3b107C9d34dDd",
+    // 第五套部署地址（2026-09-01，与 smoke-testnet.js / keeper .env 一致）
+    config: "0x62a96b2880fD282BC0984db800057F1CDFe2873C",
+    gst: "0x6E612B64885EBcd2511f97d8eC74c80fAE08FF20",
+    zyt: "0x9bd8CD99e61BE9c1FbB35282345111017a80F107",
+    forceSell: "0x519F2179C5Fbe481034BE663C07e04b692fA6D78",
+    pool: "0x701A4A0cF59a05ada702e9b8b572b46e50F70726",
+    referral: "0xC6666DB4Ee72eC9485664fa2D67113e4BE888a86",
+    mining: "0x3A7B648752D3557C9770a56Fd3B471dB6ee8FE69",
+    deflation: "0xED866239D6Fcd7164C54b3431f745850fACc60c1",
+    // 第五套用 MockUSDT（非官方 USDT；测试钱包余额/授权均针对此地址）
+    usdt: "0xe6d5879149078B7082567AF70319a16b7952CA8C",
   },
 };
 
