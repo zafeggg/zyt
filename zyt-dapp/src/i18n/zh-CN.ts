@@ -67,6 +67,7 @@ export default {
     depositAction: "确认入金",
     depositRange: "入金范围 {min}-{max} U",
     amountOutOfRange: "单笔入金需在 {min}-{max} U 之间",
+    stage2Tip: "当前处于阶段2（LP 1:1），入金将自动补充等额 LP 配额后生效",
     whitelistTip: "买入需白名单：请先联系社区申请，由运营多签审核后开放",
     buyDisabled: "未在白名单",
     zyt: "众赢币",

@@ -18,6 +18,10 @@
     <div v-if="mode === 'buy' && isWhitelisted !== false" class="range-tip">
       {{ $t("swap.depositRange", { min: depositMin, max: depositMax }) }}
     </div>
+    <!-- v12：stage2 LP 1:1 配额提示 -->
+    <div v-if="mode === 'buy' && stageRef === 2" class="range-tip lp-tip">
+      {{ $t("swap.stage2Tip") }}
+    </div>
 
     <!-- 金额输入 -->
     <div class="input-row">
@@ -95,13 +99,16 @@ const isWhitelisted = ref<boolean | null>(null);
 // v12：入金范围（链上 config 读取，默认 100~500U）
 const depositMin = ref(100);
 const depositMax = ref(500);
+// v12：当前阶段（stage2 = LP 1:1 配额阶段，入金需先补 LP）
+const stageRef = ref(0);
 
 async function loadDepositRange() {
   try {
-    const { config } = getContracts(false);
-    const [lo, hi] = await Promise.all([config.minDeposit(), config.maxDeposit()]);
+    const { config, pool } = getContracts(false);
+    const [lo, hi, stage] = await Promise.all([config.minDeposit(), config.maxDeposit(), pool.getStage()]);
     depositMin.value = Number(formatEther(lo));
     depositMax.value = Number(formatEther(hi));
+    stageRef.value = Number(stage);
   } catch {
     /* 保持默认 100~500 */
   }
@@ -181,10 +188,10 @@ async function submit() {
   }
   submitting.value = true;
   try {
-    const { mining, zyt, usdt } = getContracts(true);
     const amt = parseEther(amount.value);
     if (mode.value === "sell") {
       // 卖出 ZYT：需授权 pool（由 mining.sellZyt 内部转给 pool）
+      const { mining, zyt } = getContracts(true);
       const poolAddr = await (await import("../config")).currentChain().contracts.pool;
       const tx0 = await zyt.approve(poolAddr, amt);
       await tx0.wait();
@@ -192,9 +199,21 @@ async function submit() {
       await tx.wait();
       showSuccessToast("OK");
     } else {
-      // 入金：USDT 授权 mining
-      const tx0 = await usdt.approve(await mining.getAddress(), amt);
+      // 入金：USDT 授权 mining（addLiquidity 与 deposit 均由 mining 发起 transferFrom，一次授权覆盖）
+      const { mining, pool, usdt } = getContracts(true);
+      const amt = parseEther(amount.value);
+      const stage = Number(await pool.getStage());
+      const tx0 = await usdt.approve(await mining.getAddress(), stage === 2 ? amt * 2n : amt);
       await tx0.wait();
+      // v12：stage2（LP 1:1 配额阶段）需先补充 LP 配额再入金——缺额 = 入金额 - 现有 lpQuota
+      if (stage === 2) {
+        const info = await mining.userInfo(address.value);
+        const lp = BigInt(info[5] ?? 0);
+        const need = amt - lp;
+        if (need > 0n) {
+          await (await mining.addLiquidity(need)).wait();
+        }
+      }
       const tx = await mining.deposit(amt, refAddr());
       await tx.wait();
       showSuccessToast("OK");

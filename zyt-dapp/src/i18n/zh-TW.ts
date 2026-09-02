@@ -68,6 +68,7 @@ export default {
     depositAction: "確認入金",
     depositRange: "入金範圍 {min}-{max} U",
     amountOutOfRange: "單筆入金需在 {min}-{max} U 之間",
+    stage2Tip: "當前處於階段2（LP 1:1），入金將自動補充等額 LP 配額後生效",
     whitelistTip: "買入需白名單：請先聯繫社區申請，由運營多簽審核後開放",
     buyDisabled: "未在白名單",
     zyt: "眾贏幣",

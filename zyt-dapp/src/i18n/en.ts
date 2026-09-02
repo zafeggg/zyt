@@ -68,6 +68,7 @@ export default {
     depositAction: "Confirm Deposit",
     depositRange: "Range {min}-{max} USDT",
     amountOutOfRange: "Deposit amount must be {min}-{max} USDT",
+    stage2Tip: "Stage 2 (LP 1:1): deposit will auto-top-up matching LP quota first",
     whitelistTip: "Buy requires whitelist: contact the community, approved by multi-sig ops",
     buyDisabled: "Not whitelisted",
     zyt: "ZYT",
