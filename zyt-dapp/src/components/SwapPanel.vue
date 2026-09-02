@@ -14,6 +14,11 @@
     <!-- v7：非白名单提示条 -->
     <div v-if="isWhitelisted === false" class="wl-tip">{{ $t("swap.whitelistTip") }}</div>
 
+    <!-- v12：入金金额范围提示（链上 config.minDeposit/maxDeposit，默认 100~500U） -->
+    <div v-if="mode === 'buy' && isWhitelisted !== false" class="range-tip">
+      {{ $t("swap.depositRange", { min: depositMin, max: depositMax }) }}
+    </div>
+
     <!-- 金额输入 -->
     <div class="input-row">
       <div class="input-box">
@@ -61,6 +66,7 @@
 import { ref, computed, watch } from "vue";
 import { parseEther, formatEther } from "ethers";
 import { showToast, showSuccessToast, showFailToast } from "vant";
+import { useI18n } from "vue-i18n";
 import SlippageBadge from "./SlippageBadge.vue";
 import TokenSelector, { type TokenOption } from "./TokenSelector.vue";
 import { useWallet } from "../composables/useWallet";
@@ -72,6 +78,7 @@ const props = defineProps<{
   refresh: () => Promise<void>;
 }>();
 
+const { t } = useI18n();
 const { address, getSigner, tokenBalance } = useWallet();
 const mode = ref<"sell" | "buy">("sell");
 const tokenSymbol = ref("ZYT");
@@ -85,6 +92,20 @@ const walletReady = computed(() => !!address.value);
 
 // v7：买入白名单状态（null=加载中；false=未在白名单，禁用入金）
 const isWhitelisted = ref<boolean | null>(null);
+// v12：入金范围（链上 config 读取，默认 100~500U）
+const depositMin = ref(100);
+const depositMax = ref(500);
+
+async function loadDepositRange() {
+  try {
+    const { config } = getContracts(false);
+    const [lo, hi] = await Promise.all([config.minDeposit(), config.maxDeposit()]);
+    depositMin.value = Number(formatEther(lo));
+    depositMax.value = Number(formatEther(hi));
+  } catch {
+    /* 保持默认 100~500 */
+  }
+}
 
 async function loadWhitelist() {
   isWhitelisted.value = null;
@@ -108,6 +129,7 @@ watch(
     if (a) {
       setSigner(await getSigner());
       await loadWhitelist();
+      await loadDepositRange();
       await loadBalance();
     } else {
       isWhitelisted.value = null;
@@ -117,7 +139,6 @@ watch(
   // 默认不立即触发会导致 setSigner 从未执行、入金报 NOT_CONNECTED
   { immediate: true }
 );
-
 watch(mode, () => loadBalance());
 
 async function loadBalance() {
@@ -150,6 +171,14 @@ function onTokenSelect(tk: TokenOption) {
 
 async function submit() {
   if (!amount.value || parseFloat(amount.value) <= 0) return;
+  // v12：入金前校验链上金额范围（100~500U），避免浪费 gas 触发合约 revert
+  if (mode.value === "buy") {
+    const v = parseFloat(amount.value);
+    if (v < depositMin.value || v > depositMax.value) {
+      showFailToast(t("swap.amountOutOfRange", { min: depositMin.value, max: depositMax.value }));
+      return;
+    }
+  }
   submitting.value = true;
   try {
     const { mining, zyt, usdt } = getContracts(true);
@@ -272,9 +301,13 @@ function refAddr(): string {
   border-radius: var(--radius-sm);
   background: rgba(245, 193, 93, 0.12);
   border: 1px solid rgba(245, 193, 93, 0.3);
-  color: var(--gold);
-  font-size: 12px;
+  color: var(--gold);  font-size: 12px;
   line-height: 1.5;
+}
+.range-tip {
+  margin: 2px 2px 10px;
+  font-size: 11px;
+  color: var(--text-tertiary);
 }
 .action-btn {
   border-radius: 10px;

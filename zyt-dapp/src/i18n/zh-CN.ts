@@ -66,6 +66,7 @@ export default {
     sellAction: "确认卖出",
     depositAction: "确认入金",
     depositRange: "入金范围 {min}-{max} U",
+    amountOutOfRange: "单笔入金需在 {min}-{max} U 之间",
     whitelistTip: "买入需白名单：请先联系社区申请，由运营多签审核后开放",
     buyDisabled: "未在白名单",
     zyt: "众赢币",

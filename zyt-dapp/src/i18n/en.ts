@@ -67,6 +67,7 @@ export default {
     sellAction: "Confirm Sell",
     depositAction: "Confirm Deposit",
     depositRange: "Range {min}-{max} USDT",
+    amountOutOfRange: "Deposit amount must be {min}-{max} USDT",
     whitelistTip: "Buy requires whitelist: contact the community, approved by multi-sig ops",
     buyDisabled: "Not whitelisted",
     zyt: "ZYT",

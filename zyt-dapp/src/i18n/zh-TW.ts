@@ -67,6 +67,7 @@ export default {
     sellAction: "確認賣出",
     depositAction: "確認入金",
     depositRange: "入金範圍 {min}-{max} U",
+    amountOutOfRange: "單筆入金需在 {min}-{max} U 之間",
     whitelistTip: "買入需白名單：請先聯繫社區申請，由運營多簽審核後開放",
     buyDisabled: "未在白名單",
     zyt: "眾贏幣",
