@@ -40,12 +40,12 @@
 |---|---|---|
 | gstMaxSupply | 333_000_000e18 | GST 总供应（锁池核对用） |
 | zytMaxSupply | 2_100_000_000e18 | 初始底池 ZYT 21 亿 |
-| totalSupplyCap | 100_000_000_000e18 | mint 保险丝硬顶（防无限增发） |
+| totalSupplyCap | 100_000_000_000e18 | ZYT mint 保险丝硬顶（防无限增发）；口径=初始 21 亿进池、铸造硬顶 1000 亿，宣传勿写死"总量 21 亿" |
 | minDeposit / maxDeposit | 100e18 / 500e18 | 单笔入金区间（U） |
 | marketingRate / poolRate | 4000 / 6000 | 入金 40% 营销 / 60% 注池 |
 | powerRate | 10000 | 算力倍率 1.0 |
 | dailyCompoundRate | 100 | 算力日复利 1% |
-| dynamicQuotaMul | 5 | 动态额度 = 入金 × 5 |
+| dynamicQuotaMul | 5 | 动态收益额度（领取上限，非保证收益）= 累计入金 × 5 |
 | staticExitMul | 2 | 静态 2 倍出局 |
 | deflationRate / deflationFloor | 200 / 5_000_000e18 | 日通缩 2% / 通缩至 500 万枚停 |
 | baseSlippage / slippageTier1-4 | 500 / 1000 / 2000 / 4000 / 8000 | 滑点档位 5% / 10% / 20% / 40% / 80% |
