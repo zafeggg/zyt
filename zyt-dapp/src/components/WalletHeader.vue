@@ -85,7 +85,10 @@ async function handleConnect() {
   } catch (e: any) {
     connecting.value = false;
     const msg =
-      e?.message === "NO_WALLET" ? t("common.noWallet") : e?.message === "USER_REJECTED" ? t("common.rejected") : t("common.noWallet");
+      e?.message === "NO_WALLET" ? t("common.noWallet")
+      : e?.message === "USER_REJECTED" ? t("common.rejected")
+      : e?.message === "WRONG_CHAIN" ? t("common.wrongChain")
+      : t("common.noWallet");
     showToast({ type: "fail", message: msg });
   }
 }
@@ -99,7 +102,9 @@ async function onSelectWallet(w: WalletOption) {
     showToast({ type: "success", message: t("common.connected") });
   } catch (e: any) {
     const msg =
-      e?.message === "USER_REJECTED" ? t("common.rejected") : t("common.noWallet");
+      e?.message === "USER_REJECTED" ? t("common.rejected")
+      : e?.message === "WRONG_CHAIN" ? t("common.wrongChain")
+      : t("common.noWallet");
     showToast({ type: "fail", message: msg });
   } finally {
     connecting.value = false;

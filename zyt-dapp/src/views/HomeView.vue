@@ -10,20 +10,21 @@
       <div class="pool-cards">
         <div class="pool-card">
           <div class="p-label">{{ $t("home.poolGst") }}</div>
-          <div class="p-value">{{ fmtNum(poolStats.poolGST, 2) }}</div>
+          <div class="p-value">{{ loaded ? fmtNum(poolStats.poolGST, 2) : "--" }}</div>
           <div class="p-sub">GST</div>
         </div>
         <div class="pool-card">
           <div class="p-label">{{ $t("home.poolZyt") }}</div>
-          <div class="p-value">{{ fmtCompact(poolStats.poolZYT) }}</div>
+          <div class="p-value">{{ loaded ? fmtCompact(poolStats.poolZYT) : "--" }}</div>
           <div class="p-sub">ZYT</div>
         </div>
         <div class="pool-card">
           <div class="p-label">{{ $t("home.price") }}</div>
-          <div class="p-value price">{{ fmtPrice(poolStats.price) }}</div>
+          <div class="p-value price">{{ loaded ? fmtPrice(poolStats.price) : "--" }}</div>
           <div class="p-sub">USDT</div>
         </div>
       </div>
+      <div v-if="error && !loaded" class="err-tip">{{ $t("home.loadError") }}</div>
       <div class="stage-line">
         <span v-for="s in 3" :key="s" class="stage" :class="{ active: poolStats.stage >= s }">
           阶段{{ s }}
@@ -74,7 +75,7 @@ import QuotaCard from "../components/QuotaCard.vue";
 import { usePoolData } from "../composables/usePoolData";
 import { useWallet } from "../composables/useWallet";
 
-const { poolStats, userStats, forceSellStats, refresh, fmtCompact, fmtNum } = usePoolData();
+const { poolStats, userStats, forceSellStats, loaded, error, refresh, fmtCompact, fmtNum } = usePoolData();
 const { listenAccountChange } = useWallet();
 const router = useRouter();
 
@@ -178,5 +179,11 @@ onUnmounted(() => {
   font-size: 11px;
   color: var(--text-tertiary);
   margin: 14px 0 20px;
+}
+.err-tip {
+  text-align: center;
+  font-size: 11px;
+  color: var(--red-up, #e24b4a);
+  margin-top: 10px;
 }
 </style>

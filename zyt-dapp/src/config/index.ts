@@ -1,5 +1,9 @@
 // ===== 链与合约地址配置 =====
 // 本地默认使用 hardhat 部署地址；BSC mainnet 部署后替换
+// v13：API 基址统一走 import.meta.env.VITE_API_BASE（构建时注入），未注入时按环境回退：
+//       local 分支 -> http://localhost:8080（本地联调直连 keeper）
+//       bscTestnet / bsc 分支 -> /api（同源相对路径，生产由 Nginx 反代到 keeper 8080，方案 B）
+// 注意：页面在浏览器打开时 localhost 指向用户本机，联调只在本机有效；发布请用 VITE_API_BASE 或 /api
 
 export interface ChainConfig {
   name: string;
@@ -20,11 +24,14 @@ export interface ChainConfig {
   };
 }
 
+// 构建时注入：VITE_API_BASE=http://1.2.3.4:8080 或留空走各分支默认
+const envApiBase = (import.meta.env.VITE_API_BASE as string | undefined) || "";
+
 const LOCAL: ChainConfig = {
   name: "hardhat",
   chainId: 31337,
   rpc: "http://127.0.0.1:8545",
-  apiBase: "http://localhost:8080",
+  apiBase: envApiBase || "http://localhost:8080",
   contracts: {
     // 来自 scripts/deploy.js 本地部署输出
     config: "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512",
@@ -43,8 +50,8 @@ const BSC_TESTNET: ChainConfig = {
   name: "BSC Testnet",
   chainId: 97,
   rpc: "https://bsc-testnet-rpc.publicnode.com",
-  // v11：testnet 联调接入本地 keeper（API 优先；keeper 断 → 合约直连降级）
-  apiBase: "http://localhost:8080",
+  // v13：testnet 生产同源反代 /api（Nginx 代理 keeper）；联调可 VITE_API_BASE=http://localhost:8080 覆盖
+  apiBase: envApiBase || "/api",
   contracts: {
     // 第五套部署地址（2026-09-01，与 smoke-testnet.js / keeper .env 一致）
     config: "0x62a96b2880fD282BC0984db800057F1CDFe2873C",
@@ -64,7 +71,7 @@ const BSC_MAINNET: ChainConfig = {
   name: "BSC",
   chainId: 56,
   rpc: "https://bsc-dataseed.binance.org",
-  apiBase: "", // 上线后填 keeper API 地址
+  apiBase: envApiBase || "/api", // v13：主网上线同源反代；纯直连可留空用 VITE_API_BASE="" 覆盖
   contracts: {
     config: "",
     gst: "",

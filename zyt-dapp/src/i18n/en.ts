@@ -13,6 +13,7 @@ export default {
     balance: "Balance",
     noWallet: "No wallet detected, please open in TokenPocket / MetaMask",
     rejected: "Connection cancelled",
+    wrongChain: "Wrong network detected, auto-switch attempted, please confirm and retry",
   },
   wallet: {
     selectWallet: "Select Wallet",
@@ -52,6 +53,7 @@ export default {
     forceSellSold: "Sold {n} ZYT",
     forceSellRisk: "⚠ Window expiring — shortfall will be auto-burned",
     forceSellNoData: "No force-sell data",
+    loadError: "Failed to load data, please check your network and retry",
   },
   swap: {
     title: "Swap",

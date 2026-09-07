@@ -92,17 +92,17 @@
 
 ### 1.2 合约拆分（9 模块）
 
-| 合约 | 职责 | 关键函数 |
+| 合约 | 职责 | 关键函数（与源码一致，2026-09-03 校正） |
 |---|---|---|
-| **GSTToken** | BEP20 底池代币（自建，3.33 亿枚，1U 起步）；底池部分转出，其余锁定 | transfer/burn、lockSupply |
-| **ZYTToken** | BEP20 主代币；含转账税/销毁/强制卖出 hook；**用户卖出统计（sellInfo + userList 遍历接口）** | transfer/transferFrom、_beforeTokenTransfer、burn、getUserCount/getUserAt/getSellInfo |
-| **ZYTPoolManager** | 底池记账（GST+ZYT）、阶段门控、**买入白名单**、**当日快照基准价 + 动态滑点档位** | getStage()、getCurrentSlippage()、updateSnapshot()、recordGSTIn/Out、setBuyWhitelist() |
-| **ZYTMining** | 入金/入单（**白名单校验**）、算力发放、每日产出领取、动态额度控制 | deposit()、claim()、dailyRelease()、checkQuota() |
-| **ZYTCompute** | 算力复利 + 静态/动态双出局阈值 | powerOf()、checkExit()、checkQuota() |
-| **ZYTReferral** | 推荐关系绑定、动态分账（1代7% / 2-10代2% / 11-20代0.5% / 10% 营销） | bindRef()、distributeRefBonus() |
-| **ZYTDeflation** | 每日 2% 通缩（1% 销毁 + 1% 算力加权分红）+ **快照基准价更新** | dailySnapshot() |
-| **ZYTForceSell** | 4 窗口强制卖出检查 + 状态位 | checkAndBurn()、recordTransfer() |
-| **ZYTConfig** | 全局参数、**白名单开关**、紧急开关（pause） | setParam()（多签）、pause()/unpause() |
+| **GSTToken** | BEP20 底池代币（自建，3.33 亿枚，1U 起步）；底池部分转出，其余锁定 | transfer/transferFrom（锁定后仅限黑洞/豁免地址）、lockRemaining()、setTransferAllowed() |
+| **ZYTToken** | BEP20 主代币；含转账滑点/销毁/强制卖出 hook；**用户卖出统计（sellInfo + userList 遍历接口）** | mintTo()/burnFrom()、recordSellUsdt()、getUserCount/getUserAt/getSellInfo；转账 hook（_update）：强制卖出检查 + 10% 转账滑点 + 卖出统计 |
+| **ZYTPoolManager** | 底池记账（GST+ZYT）、阶段门控、**买入白名单**、**当日快照基准价 + 动态滑点档位** | initialize()、getStage()/getTradePrice()/getCurrentSlippage()、updateSnapshot()、recordBuy()/settleSell()、dailyBurn()/payoutDividend()、setBuyWhitelist(Batch)() |
+| **ZYTMining** | 入金/入单（**白名单校验**）、算力发放、每日产出领取、动态额度控制 | deposit()/sellZyt()、claimReward()/claimDividend()、dailyRelease()、addLiquidity()、powerOf()/userInfo() |
+| **ZYTCompute** | 算力复利 + 静态/动态双出局阈值（纯计算库） | powerWithCompound()、isStaticExited()、isQuotaExhausted()/quotaFor() |
+| **ZYTReferral** | 推荐关系绑定、20 代分账记账（1代7% / 2-10代2% / 11-20代0.5% / 技术10%） | bind()、getAncestors()/getDepth()；奖励 mint 由 ZYTMining._distributeRef 执行 |
+| **ZYTDeflation** | 每日 2% 通缩（1% 销毁 + 1% 算力加权分红）+ **快照基准价更新** | dailySnapshot()（keeper/owner 触发） |
+| **ZYTForceSell** | 60 天 4 窗口强制卖出检查 + 到期结算 | onMint()、checkAndBurn()、settleExpired() |
+| **ZYTConfig** | 全局参数、**白名单开关**、紧急开关（pause） | setUint()/setAddress()/setBuyWhitelistEnabled()（均仅 owner 多签）、pause()/unpause() |
 
 ### 1.3 合约依赖
 
@@ -257,7 +257,7 @@ ZYTToken ──hook──> ZYTForceSell
 ### 3.3 卖出 / 转账（含强制卖出 hook、动态滑点、快照基准价）
 
 ```
-[任意 transfer / transferFrom] 触发 _beforeTokenTransfer
+[任意 transfer / transferFrom] 触发 _update（OZ v5 转账 hook）
    │
    ├─ 1. 若 to == 白名单（底池/合约）→ 跳过部分 hook
    ├─ 2. ZYTForceSell.checkAndBurn(from, to, amount)
@@ -281,8 +281,8 @@ ZYTToken ──hook──> ZYTForceSell
    │       ├─ USDT 出 = 净 ZYT × **snapshotPrice（当日快照锁定价，防闪电贷操纵）**
    │       └─ ZYTPool 转 USDT 给 user
    ├─ 7. 记账：
-   │       ├─ userWithdrawTotal[user] += usdtOut（静态 2 倍判断）
-   │       └─ ZYTCompute.checkExit()：达标即 userPower = 0
+   │       ├─ users[user].withdrawTotal += usdtOut（静态 2 倍判断）
+   │       └─ ZYTCompute.isStaticExited()：达标即算力停发（powerBase = 0）
    └─ 8. 事件：Sold/Transferred + ForceSellBurned + SlippageCollected(rate)
 ```
 

@@ -11,6 +11,7 @@ export default {
     balance: "余额",
     noWallet: "未检测到钱包，请在 TokenPocket / MetaMask 内打开",
     rejected: "已取消连接",
+    wrongChain: "网络不正确，已尝试自动切换，请确认后重试",
   },
   wallet: {
     selectWallet: "选择钱包",
@@ -51,6 +52,7 @@ export default {
     forceSellSold: "已卖 {n} ZYT",
     forceSellRisk: "⚠ 窗口将到期，未卖足将触发自动销毁",
     forceSellNoData: "暂无强制卖出数据",
+    loadError: "数据加载失败，请检查网络连接后重试",
   },
   swap: {
     title: "兑换",

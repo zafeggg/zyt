@@ -44,9 +44,11 @@ const props = defineProps<{
   user: UserStats | null;
 }>();
 
-const burned = computed(() => "0");
-const today = computed(() => "0");
-const networkPower = computed(() => "0");
+// 占位统计：keeper /stats 尚未返回 burned/todayDeposit/networkPower，待 #8 扩展后接入真值。
+// 显示 "--" 避免 0 冒充真实统计（v13）
+const burned = computed(() => "--");
+const today = computed(() => "--");
+const networkPower = computed(() => "--");
 
 function fmtCompact(n: string, d = 2): string {
   const v = parseFloat(n);

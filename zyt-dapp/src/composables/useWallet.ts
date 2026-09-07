@@ -129,11 +129,70 @@ async function listWallets(): Promise<WalletOption[]> {
   return opts;
 }
 
+async function switchChain(): Promise<boolean> {
+  const chain = currentChain();
+  // 本地 hardhat (31337) 不切链：钱包不支持该链时忽略
+  if (chain.chainId === 31337) return true;
+  try {
+    const { provider } = await resolveWallet();
+    await provider.request({
+      method: "wallet_switchEthereumChain",
+      params: [{ chainId: "0x" + chain.chainId.toString(16) }],
+    });
+    return true;
+  } catch (e: any) {
+    if (e?.code === 4902) {
+      try {
+        const chainCfg = currentChain();
+        const { provider } = await resolveWallet();
+        await provider.request({
+          method: "wallet_addEthereumChain",
+          params: [
+            {
+              chainId: "0x" + chainCfg.chainId.toString(16),
+              chainName: chainCfg.name,
+              rpcUrls: [chainCfg.rpc],
+            },
+          ],
+        });
+        return true;
+      } catch {
+        return false;
+      }
+    }
+    return false;
+  }
+}
+
+/**
+ * v13：连接后网络强制校验。eth_chainId 与目标链不一致则自动 switch（网络不存在则 add 后 switch）。
+ * 返回 false 表示钱包未切到目标链（用户拒绝或失败），调用方不得注入 signer。
+ * @param w 指定 provider（connectWith 场景传选中钱包；缺省用 activeProvider / window.ethereum）
+ */
+async function ensureChain(w?: any): Promise<boolean> {
+  const chain = currentChain();
+  if (chain.chainId === 31337) return true; // 本地 hardhat 不校验
+  try {
+    const provider = w || activeProvider || (window as any).ethereum;
+    if (!provider) return false;
+    const hexId = "0x" + chain.chainId.toString(16);
+    const cur = await provider.request({ method: "eth_chainId" });
+    if (String(cur).toLowerCase() === hexId.toLowerCase()) return true;
+    return switchChain();
+  } catch {
+    return false;
+  }
+}
+
 /** 用指定钱包连接（用户在选择弹窗中点选后调用） */
 async function connectWith(opt: WalletOption): Promise<void> {
   const accounts = await opt.provider.request({ method: "eth_requestAccounts" });
   if (!accounts || accounts.length === 0) {
     throw new Error("USER_REJECTED");
+  }
+  // v13：连接后强制校验目标链（FIBO 等错链下 eth_call 全返 0x，必须切到 BSC Testnet）
+  if (!(await ensureChain(opt.provider))) {
+    throw new Error("WRONG_CHAIN");
   }
   activeProvider = opt.provider;
   address.value = accounts[0];
@@ -151,46 +210,15 @@ export function useWallet() {
     if (!accounts || accounts.length === 0) {
       throw new Error("USER_REJECTED");
     }
+    // v13：连接后强制校验目标链
+    if (!(await ensureChain(provider))) {
+      throw new Error("WRONG_CHAIN");
+    }
     activeProvider = provider;
     address.value = accounts[0];
     store.setAddress(accounts[0]);
     // v12：连接成功后立即注入 signer（防 SwapPanel 等组件在 address 已非空时才挂载、watch 不触发导致 NOT_CONNECTED）
     setSigner(await new BrowserProvider(provider).getSigner());
-  }
-
-  async function switchChain(): Promise<boolean> {
-    const chain = currentChain();
-    // 本地 hardhat (31337) 不切链：钱包不支持该链时忽略
-    if (chain.chainId === 31337) return true;
-    try {
-      const { provider } = await resolveWallet();
-      await provider.request({
-        method: "wallet_switchEthereumChain",
-        params: [{ chainId: "0x" + chain.chainId.toString(16) }],
-      });
-      return true;
-    } catch (e: any) {
-      if (e?.code === 4902) {
-        try {
-          const chainCfg = currentChain();
-          const { provider } = await resolveWallet();
-          await provider.request({
-            method: "wallet_addEthereumChain",
-            params: [
-              {
-                chainId: "0x" + chainCfg.chainId.toString(16),
-                chainName: chainCfg.name,
-                rpcUrls: [chainCfg.rpc],
-              },
-            ],
-          });
-          return true;
-        } catch {
-          return false;
-        }
-      }
-      return false;
-    }
   }
 
   function getProvider(): BrowserProvider {
@@ -219,6 +247,8 @@ export function useWallet() {
       const { provider } = await resolveWallet();
       const accounts = await provider.request({ method: "eth_accounts" });
       if (accounts && accounts.length > 0) {
+        // v13：静默恢复同样要求目标链，错链（如 FIBO 12306）不注入 signer，避免 eth_call 全返 0x
+        if (!(await ensureChain(provider))) return;
         activeProvider = provider;
         address.value = accounts[0];
         store.setAddress(accounts[0]);
@@ -256,6 +286,7 @@ export function useWallet() {
     connectWith,
     listWallets,
     switchChain,
+    ensureChain,
     getProvider,
     getSigner,
     tokenBalance,

@@ -1,4 +1,4 @@
-import { ref, computed } from "vue";
+import { ref, computed, watch } from "vue";
 import { formatEther } from "ethers";
 import { useWallet } from "./useWallet";
 import { getContracts } from "./useContracts";
@@ -37,6 +37,9 @@ const poolStats = ref<PoolStats>({
 const userStats = ref<UserStats | null>(null);
 const forceSellStats = ref<KeeperForceSell | null>(null);
 const loading = ref(false);
+// v13：加载状态与错误态。数据未成功前页面展示占位，禁止用初始 0 冒充真实数据
+const loaded = ref(false);
+const error = ref("");
 // 数据源标记（调试/诊断用）：api=走 keeper API；chain=降级合约直连
 const source = ref<"api" | "chain">("chain");
 
@@ -47,13 +50,14 @@ export function usePoolData() {
 
   const slippageLabel = computed(() => {
     const s = poolStats.value.slippage;
-    return `${s / 100}%`;
+    return `${s}%`; // v13：slippage 语义为百分数（5 = 5%），修掉此前 s/100 显示 0.05% 的错误
   });
 
   /** 轮询刷新数据：优先 keeper API（省 90% RPC），失败降级合约直连 */
   async function refresh() {
     try {
       loading.value = true;
+      error.value = "";
       const apiPool = await api.stats();
       if (apiPool?.pool) {
         // ===== 走 keeper API（链下聚合数据） =====
@@ -66,10 +70,11 @@ export function usePoolData() {
           snapshotGST: formatEther(BigInt(p.snapshot_gst || "0")),
           price: formatEther(BigInt(p.price || "0")),
           stage: Number(p.stage || 0),
-          slippage: Number(p.slippage_pct || 5),
+          slippage: Number(p.slippage_pct ?? 5), // keeper 返回百分数（5 = 5%）
         };
+        loaded.value = true;
       } else {
-        // ===== 降级：合约直连 =====
+        // ===== 降级：合约直连（v13：走公共只读 RPC，无需钱包连接） =====
         source.value = "chain";
         const { pool } = getContracts(false);
         const [gst, zyt, usdt, snapshot, price, stage, slip] = await Promise.all([
@@ -88,8 +93,9 @@ export function usePoolData() {
           snapshotGST: formatEther(snapshot),
           price: formatEther(price),
           stage: Number(stage),
-          slippage: Number(slip) / 100,
+          slippage: Number(slip) / 100, // 链上返回基点（500 = 5%），折成百分数
         };
+        loaded.value = true;
       }
 
       if (address.value) {
@@ -126,10 +132,16 @@ export function usePoolData() {
       }
     } catch (e) {
       console.warn("refresh pool failed", e);
+      error.value = "network"; // 网络/合约配置错误；UI 显示提示而非 0
     } finally {
       loading.value = false;
     }
   }
+
+  // v13：钱包连接/切换成功后立即刷新（消除 HomeView 挂载时钱包恢复未完成的时序竞态）
+  watch(address, (a) => {
+    if (a) refresh();
+  });
 
   /** 压缩显示大数（21亿 → 21.0亿） */
   function fmtCompact(n: string, digits = 2): string {
@@ -154,6 +166,8 @@ export function usePoolData() {
     userStats,
     forceSellStats,
     loading,
+    loaded,
+    error,
     source,
     slippageLabel,
     refresh,
