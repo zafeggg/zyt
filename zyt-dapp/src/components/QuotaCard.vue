@@ -42,6 +42,14 @@
         <span>{{ $t("home.forceSellSold", { n: fmtZyt(forceSell.soldAmount) }) }}</span>
         <span>{{ $t("home.forceSellRequired", { n: fmtZyt(forceSell.requiredSell) }) }}</span>
       </div>
+      <!-- v13b：差额 / 截止时间 / 计算基数（报告 P1 信息补全） -->
+      <div v-if="diffWei > 0n" class="fs-diff">
+        {{ $t("home.forceSellDiff", { n: fmtZyt(diffWei.toString()) }) }}
+      </div>
+      <div class="fs-meta fs-sub">
+        <span>{{ $t("home.forceSellDeadline") }}: {{ fmtDeadline(forceSell.deadlineSec) }}</span>
+      </div>
+      <div class="fs-note">{{ $t("home.forceSellBase") }}</div>
       <div v-if="forceSell.atRisk" class="fs-risk">
         {{ $t("home.forceSellRisk") }}
       </div>
@@ -85,6 +93,26 @@ function fmtZyt(wei: string): string {
   } catch {
     return "0";
   }
+}
+
+// v13b：待卖差额（应卖 - 已卖，wei）
+const diffWei = computed(() => {
+  if (!props.forceSell) return 0n;
+  try {
+    const req = BigInt(props.forceSell.requiredSell || "0");
+    const sold = BigInt(props.forceSell.soldAmount || "0");
+    return req > sold ? req - sold : 0n;
+  } catch {
+    return 0n;
+  }
+});
+
+/** 截止时间（unix 秒 → 本地日期时间） */
+function fmtDeadline(sec: number): string {
+  if (!sec) return "-";
+  const d = new Date(sec * 1000);
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 </script>
 
@@ -178,6 +206,22 @@ function fmtZyt(wei: string): string {
       justify-content: space-between;
       font-size: 11px;
       color: var(--text-secondary);
+      &.fs-sub {
+        margin-top: 2px;
+        color: var(--text-tertiary);
+      }
+    }
+    .fs-diff {
+      margin-top: 4px;
+      font-size: 11px;
+      color: #f47a77;
+      font-weight: 600;
+    }
+    .fs-note {
+      margin-top: 6px;
+      font-size: 10px;
+      line-height: 1.5;
+      color: var(--text-tertiary);
     }
     .fs-risk {
       margin-top: 8px;
