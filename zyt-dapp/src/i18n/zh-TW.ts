@@ -39,7 +39,7 @@ export default {
     price: "當前市價",
     myEarnings: "我的累計收益",
     walletBalance: "錢包餘額",
-    dynamicQuota: "動態額度",
+    dynamicQuota: "動態收益額度",
     quotaUsed: "已用額度",
     quotaRemain: "剩餘額度",
     quotaExhausted: "額度已用完，複投入金恢復收益",

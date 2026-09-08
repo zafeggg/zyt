@@ -39,7 +39,7 @@ export default {
     price: "Price",
     myEarnings: "My Earnings",
     walletBalance: "Wallet Balance",
-    dynamicQuota: "Dynamic Quota",
+    dynamicQuota: "Dynamic Earnings Quota",
     quotaUsed: "Used",
     quotaRemain: "Remaining",
     quotaExhausted: "Quota exhausted. Reinvest to resume earnings.",
