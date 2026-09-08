@@ -127,7 +127,37 @@ export function startApi() {
       if (path === "/stats") {
         const poolRow = await db.get("SELECT * FROM pool_state WHERE id=1");
         const snap = await db.get("SELECT * FROM snapshots ORDER BY day DESC LIMIT 1");
-        res.end(JSON.stringify({ pool: poolRow, lastSnapshot: snap }));
+        // v14：统计指标扩展（burned/todayDeposit/networkPower）——burned/today 从 events 聚合（快照表 burned 列未入库）
+        const burnedRows = await db.all("SELECT amount FROM events WHERE name='PoolBurned'");
+        let burned = 0n;
+        for (const r of burnedRows) burned += BigInt(r.amount || "0");
+        const todayUTC = new Date().toISOString().slice(0, 10);
+        const depRows = await db.all("SELECT amount, created_at FROM events WHERE name='Deposited'");
+        let todayDeposit = 0n;
+        for (const r of depRows) {
+          const ca = String(r.created_at || "");
+          if (ca.slice(0, 10) === todayUTC) todayDeposit += BigInt(r.amount || "0");
+        }
+        // networkPower：遍历链上 userList 用 ledger.powerOf 精确累计（含日复利）
+        let networkPower = 0n;
+        try {
+          const n = Number(await zyt.getUserCount());
+          for (let i = 0; i < n; i++) {
+            const a = await zyt.getUserAt(i);
+            networkPower += await ledger.powerOf(a);
+          }
+        } catch {
+          /* 链上遍历失败返回 0，不阻塞 */
+        }
+        res.end(
+          JSON.stringify({
+            pool: poolRow,
+            lastSnapshot: snap,
+            burned: String(burned),
+            todayDeposit: String(todayDeposit),
+            networkPower: String(networkPower),
+          })
+        );
         return;
       }
       if (path.startsWith("/user/")) {
@@ -151,7 +181,7 @@ export function startApi() {
       if (path.startsWith("/records/")) {
         const addr = path.slice(9).toLowerCase();
         const rows = await db.all(
-          "SELECT name, from_addr, to_addr, amount, extra, block FROM events WHERE from_addr=? OR to_addr=? ORDER BY block DESC LIMIT 100",
+          "SELECT name, from_addr, to_addr, amount, extra, block, tx_hash FROM events WHERE from_addr=? OR to_addr=? ORDER BY block DESC LIMIT 100",
           [addr, addr]
         );
         res.end(JSON.stringify(rows));

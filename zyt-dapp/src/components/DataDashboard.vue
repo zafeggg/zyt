@@ -36,6 +36,7 @@
 
 <script setup lang="ts">
 import { computed } from "vue";
+import { formatEther } from "ethers";
 import SlippageBadge from "./SlippageBadge.vue";
 import type { PoolStats, UserStats } from "../composables/usePoolData";
 
@@ -44,11 +45,23 @@ const props = defineProps<{
   user: UserStats | null;
 }>();
 
-// 占位统计：keeper /stats 尚未返回 burned/todayDeposit/networkPower，待 #8 扩展后接入真值。
-// 显示 "--" 避免 0 冒充真实统计（v13）
-const burned = computed(() => "--");
-const today = computed(() => "--");
-const networkPower = computed(() => "--");
+// v14：真值接入（keeper /stats 扩展）；链上直连降级分支无此数据 → 保持 "--" 不冒充 0
+function weiToHuman(wei?: string): string {
+  if (!wei || wei === "0" || wei === "0x") return "";
+  return formatEther(BigInt(wei));
+}
+const burned = computed(() => {
+  const h = weiToHuman(props.pool.burned);
+  return h ? fmtCompact(h) : "--";
+});
+const today = computed(() => {
+  const h = weiToHuman(props.pool.todayDeposit);
+  return h ? fmtNum(h, 2) : "--";
+});
+const networkPower = computed(() => {
+  const h = weiToHuman(props.pool.networkPower);
+  return h ? fmtCompact(h) : "--";
+});
 
 function fmtCompact(n: string, d = 2): string {
   const v = parseFloat(n);

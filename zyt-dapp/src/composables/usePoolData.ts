@@ -13,6 +13,10 @@ export interface PoolStats {
   price: string;
   stage: number;
   slippage: number;
+  // v14：keeper /stats 统计扩展（wei 字符串；链上直连降级分支无此数据 → 空 = 前端显示 --）
+  burned?: string;
+  todayDeposit?: string;
+  networkPower?: string;
 }
 
 export interface UserStats {
@@ -71,6 +75,9 @@ export function usePoolData() {
           price: formatEther(BigInt(p.price || "0")),
           stage: Number(p.stage || 0),
           slippage: Number(p.slippage_pct ?? 5), // keeper 返回百分数（5 = 5%）
+          burned: apiPool.burned,
+          todayDeposit: apiPool.todayDeposit,
+          networkPower: apiPool.networkPower,
         };
         loaded.value = true;
       } else {

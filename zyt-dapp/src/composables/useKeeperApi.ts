@@ -21,6 +21,10 @@ export interface KeeperStats {
     updated_at: number;
   } | null;
   lastSnapshot?: unknown;
+  // v14：统计指标扩展（wei 字符串；DataDashboard 真值，占位 -- 替换）
+  burned?: string;
+  todayDeposit?: string;
+  networkPower?: string;
 }
 
 export interface KeeperUser {
@@ -57,6 +61,7 @@ export interface KeeperRecord {
   amount: string;
   extra: string;
   block: number;
+  hash?: string; // v14：tx hash（events 表已存，前端用于 BscScan 外链）
 }
 
 async function get<T>(path: string): Promise<T | null> {

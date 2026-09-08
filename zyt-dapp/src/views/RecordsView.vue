@@ -110,6 +110,7 @@ async function loadRecords() {
       spend: e.amount ? `${e.amount} (${e.from_addr === address.value?.toLowerCase() ? "out" : "in"})` : undefined,
       time: 0,
       block: e.block,
+      hash: e.hash,
       status: "success" as TxStatus,
       detail: e.extra || undefined,
     }));
