@@ -28,10 +28,11 @@
           <span class="pct max" @click="setPct(100)">{{ $t("swap.max") }}</span>
         </div>
       </div>
-      <div class="token-btn" @click="showPicker = true">
+      <!-- v14：币种随模式锁定（sell=ZYT / buy=USDT），移除误导性选择器：
+           入金仅 USDT、卖出仅 ZYT 是合约冻结规则，tokenSymbol 此前只控制余额显示造成语义错位 -->
+      <div class="token-btn" :style="{ cursor: 'default' }">
         <span class="dot" :style="{ background: tokenColor }" />
         {{ tokenSymbol }}
-        <van-icon name="arrow-down" size="12" />
       </div>
     </div>
 
@@ -160,18 +161,15 @@
         {{ shortHash(lastTx.hash) }}
       </a>
     </div>
-
-    <TokenSelector v-model:show="showPicker" :selected="tokenSymbol" @select="onTokenSelect" />
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, computed, watch } from "vue";
-import { parseEther, formatEther, type Contract } from "ethers";
-import { showToast, showFailToast } from "vant";
+import { parseEther, formatEther } from "ethers";
+import { showFailToast } from "vant";
 import { useI18n } from "vue-i18n";
 import SlippageBadge from "./SlippageBadge.vue";
-import TokenSelector, { type TokenOption } from "./TokenSelector.vue";
 import { useWallet } from "../composables/useWallet";
 import { getContracts, setSigner } from "../composables/useContracts";
 import { useTxRecords, newTxId, type TxRecord, type TxType, type TxStatus } from "../composables/useTxRecords";
@@ -188,11 +186,11 @@ const { address, getSigner } = useWallet();
 const { upsert } = useTxRecords();
 
 const mode = ref<"sell" | "buy">("sell");
-const tokenSymbol = ref("ZYT");
-const tokenColor = ref("#f5c15d");
+// v14：币种随模式锁定（冻结规则：卖出=ZYT / 入金=USDT），仅作余额显示与金额标签
+const tokenSymbol = computed(() => (mode.value === "sell" ? "ZYT" : "USDT"));
+const tokenColor = computed(() => (tokenSymbol.value === "ZYT" ? "#f5c15d" : "#26a17b"));
 const amount = ref("");
 const balance = ref("0");
-const showPicker = ref(false);
 
 const walletReady = computed(() => !!address.value);
 const amountNum = computed(() => parseFloat(amount.value) || 0);
@@ -478,12 +476,6 @@ function setPct(p: number) {
   if (!b) return;
   amount.value = ((b * p) / 100).toFixed(4);
   resetFlow();
-}
-
-function onTokenSelect(tk: TokenOption) {
-  tokenSymbol.value = tk.symbol;
-  tokenColor.value = tk.color;
-  loadBalance();
 }
 
 function fmtNum(n: number): string {
