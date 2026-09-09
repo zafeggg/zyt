@@ -424,6 +424,10 @@ $ npx hardhat run scripts/verify-all-mainnet.js --network bsc
 | 用途 | 第一批用户没有上游，官方码是唯一入口；建议对外**只发这一个码**，便于归因与控制 |
 | 推荐取值 | **营销收款地址**（W3 / 市场 Safe）：推荐 7% 回营销多签 = 市场费用闭环，不外流 |
 | 公示 | 官方码在公告/群公告置顶公示**全称地址**，防第三方冒充"官方邀请码"诈骗 |
+
+**当前官方码**：
+- testnet（第六套）：`0xB7233A003C37Beb100C4eFCF82793D24B90179F9`（= deployer，testnet 未单独部署营销多签；推荐链接 `http://121.40.45.58/#/?ref=0xB7233A003C37Beb100C4eFCF82793D24B90179F9`）
+- 主网：待 W3 营销 Safe 搭建后替换（上线钱包准备清单_方案A W3），**官方码必须与 ZYTConfig.marketAddress 一致**，部署时用 `MARKET_ADDRESS` 环境变量传入 deploy.js
 | 资金核对 | 每日对账含推荐分账（keeper reconcile），营销地址 7% 流入可在 BscScan 核对 |
 
 ### C.3 分发操作（运营 / 客服）
