@@ -50,11 +50,12 @@
 
 <script setup lang="ts">
 import { ref, watch, onMounted } from "vue";
+import { formatEther } from "ethers";
 import { useI18n } from "vue-i18n";
 import WalletHeader from "../components/WalletHeader.vue";
 import { useWallet } from "../composables/useWallet";
 import { useTxRecords, type TxRecord, type TxType, type TxStatus } from "../composables/useTxRecords";
-import { useKeeperApi } from "../composables/useKeeperApi";
+import { useKeeperApi, type KeeperRecord } from "../composables/useKeeperApi";
 import { currentChain } from "../config";
 
 const { t } = useI18n();
@@ -105,21 +106,80 @@ async function loadRecords() {
   // 2) 链上历史事件（keeper /records，补充多设备/历史操作）
   try {
     const evs = await api.records(address.value);
-    const fromChain: Row[] = (evs || []).map((e) => ({
-      type: mapEventName(e.name),
-      spend: e.amount ? `${e.amount} (${e.from_addr === address.value?.toLowerCase() ? "out" : "in"})` : undefined,
-      time: 0,
-      block: e.block,
-      hash: e.hash,
-      status: "success" as TxStatus,
-      detail: e.extra || undefined,
-    }));
-    rows.value = [...fromChain, ...local];  } catch {
+    // v15：本地与链上按 txHash 去重（同操作保留本地格式化版本）
+    const localHashes = new Set(local.map((r) => r.hash?.toLowerCase()).filter(Boolean));
+    const fromChain: Row[] = (evs || [])
+      .map(fmtChainRecord)
+      .filter((r) => !r.hash || !localHashes.has(r.hash.toLowerCase()));
+    rows.value = [...fromChain, ...local];
+  } catch {
     loadError.value = true;
     rows.value = local;
   } finally {
     loading.value = false;
   }
+}
+
+/** v15：链上原始事件 → 可读 Row（金额 18 位精度、extra 中文语义、hash 外链、FirstReceive 时间） */
+function fmtChainRecord(e: KeeperRecord): Row {
+  let args: Record<string, unknown> = {};
+  try {
+    args = JSON.parse(e.extra || "{}");
+  } catch {
+    args = {};
+  }
+  // wei（1e18）→ 可读数值；非整数/异常字符串回退原值显示
+  const wei = (v: unknown): string | undefined => {
+    if (v === undefined || v === null || v === "") return undefined;
+    try {
+      return formatEther(BigInt(String(v)));
+    } catch {
+      return String(v);
+    }
+  };
+  const num = (v: unknown): string | undefined => (v === undefined || v === null || v === "" ? undefined : String(v));
+  const lower = e.name.toLowerCase();
+  const base = {
+    type: mapEventName(e.name),
+    hash: e.hash,
+    time: Number(args.time || 0) * 1000, // 仅 FirstReceive 携带 time（秒）
+    block: e.block,
+    status: "success" as TxStatus,
+    from: e.from_addr,
+  };
+  if (lower.includes("deposit")) {
+    return {
+      ...base,
+      spend: wei(args.usdt),
+      detail: `铸造 ${num(wei(args.zytMinted) || "0")} ZYT · 算力 +${num(wei(args.power) || "0")} · 动态额度 ${num(wei(args.quota) || "0")}`,
+    };
+  }
+  if (lower.includes("sell") || lower.includes("sold")) {
+    return {
+      ...base,
+      spend: wei(args.zytIn),
+      detail: `获得 ${num(wei(args.usdtOut) || "0")} USDT · 滑点档位 ${Number(args.rate || 0) / 100}%`,
+    };
+  }
+  if (lower.includes("liquid")) {
+    return { ...base, spend: wei(args.usdt), detail: `获得 ${num(wei(args.usdt) || "0")} 参与额度` };
+  }
+  if (lower.includes("firstreceive")) {
+    // FirstReceive 无金额，time 为事件参数（秒级时间戳）
+    return { ...base, detail: "强制卖出窗口启动（首收币）" };
+  }
+  if (lower.includes("reward")) {
+    return { ...base, receive: wei(args.reward), detail: `${num(args.level) || "?"} 代推荐奖励（折 ${num(wei(args.usdt) || "0")} USDT）` };
+  }
+  if (lower.includes("claim")) {
+    return { ...base, receive: wei(args.reward), detail: `第 ${num(args.day) || "?"} 日产出（折 ${num(wei(args.usdt) || "0")} USDT）` };
+  }
+  // 未识别事件：金额尽力转换，detail 保底原始 JSON（不丢信息）
+  return {
+    ...base,
+    spend: wei(args.amount ?? args.usdt ?? args.zytIn),
+    detail: e.extra,
+  };
 }
 
 function reload() {
