@@ -1,7 +1,7 @@
 import { JsonRpcProvider, Contract } from "ethers";
 const RPC = "https://bsc-testnet-rpc.publicnode.com";
-const CONFIG_ADDR = "0x62a96b2880fD282BC0984db800057F1CDFe2873C";
-const POOL_ADDR = "0x701A4A0cF59a05ada702e9b8b572b46e50F70726";
+const CONFIG_ADDR = "0x55F4e5F732ACfa49015AB6546a2766Db7534cDbd";
+const POOL_ADDR = "0x020927BC660f7631709d388C992979359196DcfD";
 const p = new JsonRpcProvider(RPC, 97);
 const cfg = new Contract(CONFIG_ADDR, ["function poolStage1USDT() view returns (uint256)","function poolStage2USDT() view returns (uint256)"], p);
 const pool = new Contract(POOL_ADDR, ["function poolUSDT() view returns (uint256)","function getStage() view returns (uint256)","function snapshotPrice() view returns (uint256)"], p);

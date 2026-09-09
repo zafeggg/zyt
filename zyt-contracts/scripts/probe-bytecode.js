@@ -8,9 +8,9 @@ require("dotenv").config();
 const fs = require("fs");
 
 const ADDRS = {
-  ZYTMining: "0x3A7B648752D3557C9770a56Fd3B471dB6ee8FE69",
-  ZYTPoolManager: "0x701A4A0cF59a05ada702e9b8b572b46e50F70726",
-  ZYTDeflation: "0xED866239D6Fcd7164C54b3431f745850fACc60c1",
+  ZYTMining: "0x1ffCec692Ef2c8287C1dE7248B0621bdAd135703",
+  ZYTPoolManager: "0x020927BC660f7631709d388C992979359196DcfD",
+  ZYTDeflation: "0x16E8A145D015D80892e5CFe8cE305F0717F229a9",
 };
 
 async function main() {

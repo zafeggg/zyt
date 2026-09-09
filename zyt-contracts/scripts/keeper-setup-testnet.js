@@ -7,7 +7,7 @@
  */
 require("dotenv").config();
 
-const CONFIG_ADDR = "0x62a96b2880fD282BC0984db800057F1CDFe2873C"; // 第五套
+const CONFIG_ADDR = "0x55F4e5F732ACfa49015AB6546a2766Db7534cDbd"; // 第五套
 const KEEPER_ADDR = "0xdFA550005B75DA1930C65732Db46baD5cB50a480"; // 独立签名钱包
 
 async function main() {

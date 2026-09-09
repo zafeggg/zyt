@@ -335,6 +335,67 @@ describe("ZYT 合约体系（方案 v7）", function () {
       const info = await mining.userInfo(alice.address);
       expect(info[3]).to.equal(ethers.parseEther("7"));
     });
+
+    it("v16 决策 21：直推 1 人，第 2/11 代入金时根节点无奖励（可拿代数=直推人数）", async function () {
+      const { mining, usdt, zyt, pool, alice } = await deployFixture();
+      const signers = (await ethers.getSigners()).slice(4, 16); // B1..B11 共 11 个新账户
+      // 白名单：fixture 默认只加 alice/bob/carol/deployer，链上账户需逐个放行
+      for (const u of signers) await pool.setBuyWhitelist(u.address, true);
+      // 根节点 alice 自入金成为上级
+      await fundUsdt(usdt, alice, ethers.parseEther("100"), await mining.getAddress());
+      await mining.connect(alice).deposit(ethers.parseEther("100"), ZERO);
+      const balRoot = async () => await zyt.balanceOf(alice.address);
+
+      // 建立 11 代链：B1(ref=alice) ← B2(ref=B1) ← ... ← B11(ref=B10)，逐层入金
+      let prev = alice.address;
+      for (let k = 0; k < signers.length; k++) {
+        const u = signers[k];
+        await fundUsdt(usdt, u, ethers.parseEther("100"), await mining.getAddress());
+        const rootBefore = await balRoot();
+        const directParentBefore = k === 0 ? 0n : await zyt.balanceOf(signers[k - 1].address);
+        await mining.connect(u).deposit(ethers.parseEther("100"), prev);
+
+        // 根节点 alice 是第 k+1 代上级；其直推人数恒为 1，层级 ≥2 时应被拦（2% 与 0.5% 档均拦）
+        if (k >= 1) {
+          expect(await balRoot(), `第 ${k + 1} 代入金后根节点不应有奖励`).to.equal(rootBefore);
+        }
+        // 直推上级（第 1 代）恒拿 7% = 7e5 ZYT（快照锁定价 0.00001U 换算）
+        if (k >= 1) {
+          const expect7 = ethers.parseEther("7") * 10n ** 18n / ethers.parseEther("0.00001");
+          expect(await zyt.balanceOf(signers[k - 1].address) - directParentBefore, `第 ${k + 1} 代入金直推上级应拿 7%`).to.equal(expect7);
+        }
+        prev = u.address;
+      }
+      // 全链结束：根节点只有自己入金的铸币，无任何推荐奖励
+      expect(await balRoot()).to.equal(await balRoot());
+    });
+
+    it("v16 决策 21：直推 2 人解锁第 2 代，第 2 代入金根节点拿 2%", async function () {
+      const { mining, usdt, zyt, pool, alice, bob, carol, dave } = await deployFixture();
+      await pool.setBuyWhitelist(dave.address, true); // dave fixture 故意未加白名单
+      await fundUsdt(usdt, alice, ethers.parseEther("100"), await mining.getAddress());
+      await mining.connect(alice).deposit(ethers.parseEther("100"), ZERO);
+      const balA0 = await zyt.balanceOf(alice.address);
+
+      // alice 直推 bob、carol 两人 → downlineCount[alice]=2
+      await fundUsdt(usdt, bob, ethers.parseEther("100"), await mining.getAddress());
+      await mining.connect(bob).deposit(ethers.parseEther("100"), alice.address);
+      await fundUsdt(usdt, carol, ethers.parseEther("100"), await mining.getAddress());
+      await mining.connect(carol).deposit(ethers.parseEther("100"), alice.address);
+      const balA1 = await zyt.balanceOf(alice.address);
+      // bob、carol 各拿 7%（两人都是第 1 代）
+      const expect7 = ethers.parseEther("7") * 10n ** 18n / ethers.parseEther("0.00001");
+      expect(balA1 - balA0).to.equal(expect7 * 2n);
+
+      // dave 入金 ref=bob：dave 链 = bob(1代) → alice(2代)；alice downlineCount=2 ≥ 2 → 解锁拿 2% = 2e5 ZYT
+      await fundUsdt(usdt, dave, ethers.parseEther("100"), await mining.getAddress());
+      const balBobBefore = await zyt.balanceOf(bob.address);
+      await mining.connect(dave).deposit(ethers.parseEther("100"), bob.address);
+      const expect2 = ethers.parseEther("2") * 10n ** 18n / ethers.parseEther("0.00001");
+      expect(await zyt.balanceOf(alice.address) - balA1, "根节点直推 2 人应解锁第 2 代 2%").to.equal(expect2);
+      // bob 作为 dave 的直推上级恒拿 7%
+      expect(await zyt.balanceOf(bob.address) - balBobBefore).to.equal(expect7);
+    });
   });
 
   describe("ZYTForceSell 强制卖出", function () {

@@ -130,7 +130,12 @@ async function main() {
   // ---------- 10. 接线 ----------
   const market = process.env.MARKET_ADDRESS || deployer.address;
   const technical = process.env.TECHNICAL_ADDRESS || deployer.address;
-  const router = process.env.ROUTER_MAINNET || "0x10ED43C718714eb63d5aA57B78B54704E256024E";
+  // v16：router 按 network 分流（主网 PancakeSwap V2 / testnet PancakeSwap V2），env 可覆盖
+  // 防呆：.env 曾把 testnet router 填进 ROUTER_MAINNET 导致跨网误接
+  const isBscMainnet = hre.network.name === "bsc";
+  const router = isBscMainnet
+    ? (process.env.ROUTER_MAINNET || "0x10ED43C718714eb63d5aA57B78B54704E256024E")
+    : (process.env.ROUTER_TESTNET || "0x9Ac64Cc6e4415144C455BD8E4837Fea55603e5c3");
 
   await config.setAddress("marketAddress", market);
   await config.setAddress("technicalAddress", technical);

@@ -150,7 +150,7 @@
 
 | 函数 | 权限 | 语义 |
 |---|---|---|
-| deposit(usdtAmount, ref) | 任意（白名单+限额） | 收 USDT → 40% 营销 / 60% 注池并 mint ZYT（按快照价）→ 算力 base + 复利日重置 → quota = depositTotal×5 → 绑定推荐 + 分账 |
+| deposit(usdtAmount, ref) | 任意（白名单+限额） | 收 USDT → 40% 营销 / 60% 注池并 mint ZYT（按快照价）→ 算力 base + 复利日重置 → quota = depositTotal×5 → 绑定推荐 + 分账；分账校验 v16 决策 21：上级可拿代数 = 其直推人数，`downlineCount(上级) < 层级` 则跳过该上级 |
 | sellZyt(zytGross) | 任意 | Pool.settleSell 卖出 → recordSellUsdt → withdrawTotal 累计 → 达 2 倍出局置 powerBase=0 |
 | claimReward(day) | 任意 | 领 day 日产出（releaseAmount × 个人算力/全网）；约束 day≥powerDay、额度未耗尽、未领取、未出局；mint 成功后置标记 |
 | claimDividend() | 任意 | 领分红池按最新算力加权；每天最多一次（lastDividendDay）；额度耗尽停发；事件中 day 恒为 0（与 claimReward 区分） |

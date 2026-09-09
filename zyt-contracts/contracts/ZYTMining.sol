@@ -271,6 +271,9 @@ contract ZYTMining is ReentrancyGuard {
         for (uint256 i = 0; i < ancestors.length; i++) {
             address a = ancestors[i];
             if (a == address(0)) break;
+            // v16：可拿代数 = 上级直推人数。downlineCount(上级) < 层级(i+1) 则该上级无资格，
+            // 防止直推 1 人的上级在深层代际躺赚 0.5%（决策 21，动态判定按入金时刻状态）
+            if (referral.downlineCount(a) < i + 1) continue;
             uint256 rate = config.refRateForLevel(i + 1);
             if (rate == 0) continue;
             uint256 rewardUsdt = usdtAmount * rate / 10000;

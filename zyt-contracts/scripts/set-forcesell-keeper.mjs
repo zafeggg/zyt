@@ -3,7 +3,7 @@ import { JsonRpcProvider, Wallet, Contract } from "ethers";
 import "dotenv/config";
 const p = new JsonRpcProvider("https://bsc-testnet-rpc.publicnode.com", 97);
 const owner = new Wallet(process.env.PRIVATE_KEY, p);
-const FS = "0x519F2179C5Fbe481034BE663C07e04b692fA6D78";
+const FS = "0x24685AF81fc8443ED46b11Cb17Ba7af0ae55ce06";
 const KEEPER = "0xdFA550005B75DA1930C65732Db46baD5cB50a480";
 const fs = new Contract(FS, ["function setKeeper(address)","function keeper() view returns (address)"], owner);
 console.log("owner:", owner.address, "| 当前 keeper:", await fs.keeper());

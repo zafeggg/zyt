@@ -2,10 +2,10 @@
 import { JsonRpcProvider, Contract, formatEther } from "ethers";
 const p = new JsonRpcProvider("https://bsc-testnet-rpc.publicnode.com", 97);
 const A = {
-  mining: "0x3A7B648752D3557C9770a56Fd3B471dB6ee8FE69",
-  pool: "0x701A4A0cF59a05ada702e9b8b572b46e50F70726",
-  zyt: "0x9bd8CD99e61BE9c1FbB35282345111017a80F107",
-  usdt: "0xe6d5879149078B7082567AF70319a16b7952CA8C",
+  mining: "0x1ffCec692Ef2c8287C1dE7248B0621bdAd135703",
+  pool: "0x020927BC660f7631709d388C992979359196DcfD",
+  zyt: "0xdF18105bB57165c59AD651Eda1B4d896412d4166",
+  usdt: "0x7749da5d64c0ABA2A8203c0C630d31e7D13cFb29",
 };
 const W = process.argv[2] || "0x87C0aF08c0F974E86CAC508faA239bB1Cc2f2241";
 console.log("钱包:", W);

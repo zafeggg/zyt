@@ -1,7 +1,7 @@
 import { JsonRpcProvider, Contract } from "ethers";
 const RPC = "https://bsc-testnet-rpc.publicnode.com";
-const MINING = "0x3A7B648752D3557C9770a56Fd3B471dB6ee8FE69";
-const DEFLATION = "0xED866239D6Fcd7164C54b3431f745850fACc60c1";
+const MINING = "0x1ffCec692Ef2c8287C1dE7248B0621bdAd135703";
+const DEFLATION = "0x16E8A145D015D80892e5CFe8cE305F0717F229a9";
 const p = new JsonRpcProvider(RPC, 97);
 const m = new Contract(MINING, ["event Deposited(address indexed user, uint256 usdt, uint256 zytMinted, uint256 power, uint256 quota, address ref)"], p);
 const d = new Contract(DEFLATION, ["function lastSnapshotDay() view returns (uint256)","function snapshotCount() view returns (uint256)"], p);

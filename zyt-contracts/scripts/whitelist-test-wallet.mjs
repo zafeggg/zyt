@@ -2,7 +2,7 @@
 import { JsonRpcProvider, Wallet, Contract } from "ethers";
 import "dotenv/config";
 const RPC = "https://bsc-testnet-rpc.publicnode.com";
-const POOL = "0x701A4A0cF59a05ada702e9b8b572b46e50F70726";
+const POOL = "0x020927BC660f7631709d388C992979359196DcfD";
 const WALLET = "0x87C0aF08c0F974E86CAC508faA239bB1Cc2f2241"; // 用户测试钱包
 const p = new JsonRpcProvider(RPC, 97);
 const owner = new Wallet(process.env.PRIVATE_KEY, p);

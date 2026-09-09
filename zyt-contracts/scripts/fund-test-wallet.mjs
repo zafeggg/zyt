@@ -3,7 +3,7 @@
 import { JsonRpcProvider, Wallet, Contract, parseEther, formatEther } from "ethers";
 import "dotenv/config";
 const RPC = "https://bsc-testnet-rpc.publicnode.com";
-const MOCK = "0xe6d5879149078B7082567AF70319a16b7952CA8C";
+const MOCK = "0x7749da5d64c0ABA2A8203c0C630d31e7D13cFb29";
 const addr = process.argv[2];
 if (!/^0x[0-9a-fA-F]{40}$/.test(addr || "")) { console.log("用法: node scripts/fund-test-wallet.mjs <钱包地址> [tBNB] [USDT]"); process.exit(1); }
 const tBNB = parseEther(process.argv[3] || "0.02");

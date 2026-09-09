@@ -2,7 +2,7 @@
 import { JsonRpcProvider, Wallet, Contract, parseEther, formatEther } from "ethers";
 import "dotenv/config";
 const RPC = "https://bsc-testnet-rpc.publicnode.com";
-const MOCK = "0xe6d5879149078B7082567AF70319a16b7952CA8C";
+const MOCK = "0x7749da5d64c0ABA2A8203c0C630d31e7D13cFb29";
 const p = new JsonRpcProvider(RPC, 97);
 const deployer = new Wallet(process.env.PRIVATE_KEY, p);
 const w = Wallet.createRandom().connect(p);

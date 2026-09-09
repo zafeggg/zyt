@@ -54,7 +54,8 @@ contract ZYTReferral is Ownable {
         return arr;
     }
 
-    /// @notice 返回用户的直推代数上限（可拿代数 = 直推人数，最大 20）
+    /// @notice 返回 user 在推荐树中的上溯链深（与"可拿代数=直推人数"规则无关，
+    ///         可拿代数校验在 ZYTMining._distributeRef 中按 downlineCount(上级) 判定）
     function getDepth(address user) public view returns (uint256) {
         uint256 depth = 0;
         address cur = user;

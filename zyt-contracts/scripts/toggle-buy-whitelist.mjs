@@ -3,7 +3,7 @@
 import { JsonRpcProvider, Wallet, Contract } from "ethers";
 import "dotenv/config";
 const p = new JsonRpcProvider("https://bsc-testnet-rpc.publicnode.com", 97);
-const CONFIG = "0x62a96b2880fD282BC0984db800057F1CDFe2873C";
+const CONFIG = "0x55F4e5F732ACfa49015AB6546a2766Db7534cDbd";
 const owner = new Wallet(process.env.PRIVATE_KEY, p);
 const cfg = new Contract(CONFIG, ["function setBuyWhitelistEnabled(bool)","function buyWhitelistEnabled() view returns (bool)"], owner);
 const target = process.argv[2] === "on";

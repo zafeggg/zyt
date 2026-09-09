@@ -1,7 +1,7 @@
 // 写链路测试资产准备核查：MockUSDT mint 能力 + 测试钱包余额
 import { JsonRpcProvider, Contract } from "ethers";
 const p = new JsonRpcProvider("https://bsc-testnet-rpc.publicnode.com", 97);
-const MOCK = "0xe6d5879149078B7082567AF70319a16b7952CA8C";
+const MOCK = "0x7749da5d64c0ABA2A8203c0C630d31e7D13cFb29";
 const WALLET = "0x2faef47130a0827ad98b920d2766c46229f92ec5";
 const m = new Contract(MOCK, ["function balanceOf(address) view returns (uint256)","function mint(address,uint256)","function faucet(uint256)","function symbol() view returns (string)"], p);
 const [bal, sym] = await Promise.all([m.balanceOf(WALLET), m.symbol()]);
