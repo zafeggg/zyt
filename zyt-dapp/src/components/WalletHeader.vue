@@ -1,7 +1,10 @@
 <template>
   <div class="wallet-header">
     <div class="left">
-      <div class="logo">{{ $t("home.title") }}</div>
+      <div class="logo">
+        <img class="brand-icon" src="/favicon.svg" alt="ZYT" />
+        {{ $t("home.title") }}
+      </div>
       <div class="sub">GST · ZYT</div>
     </div>
     <div class="right">
@@ -139,10 +142,19 @@ onMounted(() => {
 }
 .left {
   .logo {
+    display: flex;
+    align-items: center;
+    gap: 6px;
     font-size: 18px;
     font-weight: 600;
     color: var(--gold);
     letter-spacing: 1px;
+    .brand-icon {
+      width: 22px;
+      height: 22px;
+      border-radius: 50%;
+      box-shadow: 0 0 6px rgba(245, 193, 93, 0.45);
+    }
   }
   .sub {
     font-size: 11px;

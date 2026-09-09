@@ -1,5 +1,7 @@
 <template>
-  <div class="app-shell">
+  <!-- v14：邀请制入口——无邀请码（且无 skipInvite=1）时全屏 gate，不渲染主应用 -->
+  <InviteGate v-if="gated" @pass="gated = false" />
+  <div v-else class="app-shell">
     <router-view v-slot="{ Component }">
       <keep-alive>
         <component :is="Component" />
@@ -11,7 +13,15 @@
 </template>
 
 <script setup lang="ts">
+import { ref } from "vue";
 import BottomNav from "./components/BottomNav.vue";
+import InviteGate from "./components/InviteGate.vue";
+import { useInvite } from "./composables/useInvite";
+
+// URL ?ref= 优先覆盖已存邀请码；无任何邀请 → gate
+const { syncFromUrl, hasInvite } = useInvite();
+syncFromUrl();
+const gated = ref(!hasInvite());
 </script>
 
 <style scoped lang="scss">

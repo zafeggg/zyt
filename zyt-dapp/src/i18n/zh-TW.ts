@@ -141,4 +141,12 @@ export default {
     referralLink: "我的推薦連結",
     share: "分享給好友",
   },
+  invite: {
+    title: "輸入邀請碼",
+    subtitle: "眾贏幣採用邀請制服務，請輸入推薦人的邀請碼或粘貼推薦連結進入",
+    placeholder: "粘貼推薦連結或 0x 邀請地址",
+    confirm: "進入",
+    invalid: "邀請碼無效，請粘貼推薦連結或 0x 開頭的邀請地址",
+    tip: "沒有邀請碼？請聯繫邀請你加入社區的成員獲取專屬推薦連結",
+  },
 } as typeof zhCN;

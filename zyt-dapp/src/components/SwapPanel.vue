@@ -173,6 +173,7 @@ import SlippageBadge from "./SlippageBadge.vue";
 import { useWallet } from "../composables/useWallet";
 import { getContracts, setSigner } from "../composables/useContracts";
 import { useTxRecords, newTxId, type TxRecord, type TxType, type TxStatus } from "../composables/useTxRecords";
+import { useInvite } from "../composables/useInvite";
 import { currentChain } from "../config";
 
 const props = defineProps<{
@@ -184,6 +185,7 @@ const props = defineProps<{
 const { t } = useI18n();
 const { address, getSigner } = useWallet();
 const { upsert } = useTxRecords();
+const { getSaved } = useInvite();
 
 const mode = ref<"sell" | "buy">("sell");
 // v14：币种随模式锁定（冻结规则：卖出=ZYT / 入金=USDT），仅作余额显示与金额标签
@@ -483,10 +485,12 @@ function fmtNum(n: number): string {
   return n.toFixed(4).replace(/\.?0+$/, "") || "0";
 }
 
-/** 从 URL 读取推荐人 ?ref=0x... */
+/** 入金推荐人：URL ?ref= 优先，其次邀请 gate 存储的邀请码，否则零地址 */
 function refAddr(): string {
-  const m = location.hash.match(/ref=([0-9a-fA-Fx]+)/);
-  return m ? m[1] : "0x0000000000000000000000000000000000000000";
+  const q = new URLSearchParams(location.hash.split("?")[1] || location.search.split("?")[1] || "");
+  const fromUrl = q.get("ref") || "";
+  if (/^0x[0-9a-fA-F]{40}$/.test(fromUrl)) return fromUrl;
+  return getSaved() || "0x0000000000000000000000000000000000000000";
 }
 </script>
 

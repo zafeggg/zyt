@@ -141,4 +141,12 @@ export default {
     referralLink: "My Referral Link",
     share: "Share to Friends",
   },
+  invite: {
+    title: "Enter Invite Code",
+    subtitle: "ZYT is invite-only. Enter your inviter's code or paste their referral link to continue",
+    placeholder: "Paste referral link or 0x invite address",
+    confirm: "Enter",
+    invalid: "Invalid invite code. Paste a referral link or a 0x invite address",
+    tip: "No invite code? Ask the community member who invited you for their referral link",
+  },
 } as typeof zhCN;

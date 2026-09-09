@@ -140,4 +140,12 @@ export default {
     referralLink: "我的推荐链接",
     share: "分享给好友",
   },
+  invite: {
+    title: "输入邀请码",
+    subtitle: "众赢币采用邀请制访问，请输入推荐人的邀请码或粘贴推荐链接进入",
+    placeholder: "粘贴推荐链接或 0x 邀请地址",
+    confirm: "进入",
+    invalid: "邀请码无效，请粘贴推荐链接或 0x 开头的邀请地址",
+    tip: "没有邀请码？请联系邀请你加入社区的成员获取专属推荐链接",
+  },
 };
