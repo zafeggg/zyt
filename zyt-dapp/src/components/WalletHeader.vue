@@ -42,6 +42,7 @@ import { showToast } from "vant";
 import { useI18n } from "vue-i18n";
 import { useWallet, type WalletOption } from "../composables/useWallet";
 import WalletSelectModal from "./WalletSelectModal.vue";
+import { copyText } from "../composables/useClipboard";
 import { setLocale } from "../i18n";
 
 const { t } = useI18n();
@@ -116,12 +117,10 @@ function closeSelect() {
 }
 
 async function copyAddr() {
-  try {
-    await navigator.clipboard.writeText(address.value);
-    showToast({ type: "success", message: t("common.copied") });
-  } catch {
-    /* ignore */
-  }
+  // v14：HTTP 环境（testnet IP 直访）navigator.clipboard 不存在 → useClipboard 兼容回退
+  const ok = await copyText(address.value);
+  if (ok) showToast({ type: "success", message: t("common.copied") });
+  else showToast({ type: "fail", message: t("common.copyFail") });
 }
 
 onMounted(() => {

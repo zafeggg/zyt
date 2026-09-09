@@ -10,6 +10,7 @@ export default {
     loading: "載入中...",
     copy: "複製",
     copied: "已複製",
+    copyFail: "複製失敗，請長按手動複製",
     balance: "餘額",
     noWallet: "未偵測到錢包，請在 TokenPocket / MetaMask 內開啟",
     rejected: "已取消連線",

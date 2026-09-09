@@ -8,6 +8,7 @@ export default {
     loading: "加载中...",
     copy: "复制",
     copied: "已复制",
+    copyFail: "复制失败，请长按手动复制",
     balance: "余额",
     noWallet: "未检测到钱包，请在 TokenPocket / MetaMask 内打开",
     rejected: "已取消连接",

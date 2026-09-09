@@ -23,9 +23,12 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { showToast } from "vant";
+import { useI18n } from "vue-i18n";
 import WalletHeader from "../components/WalletHeader.vue";
 import { useWallet } from "../composables/useWallet";
+import { copyText } from "../composables/useClipboard";
 
+const { t } = useI18n();
 const { address } = useWallet();
 const docsUrl = "https://example.com/whitepaper";
 
@@ -36,12 +39,10 @@ const refLink = computed(() => {
 });
 
 async function copyRef() {
-  try {
-    await navigator.clipboard.writeText(refLink.value);
-    showToast({ type: "success", message: "copied" });
-  } catch {
-    /* ignore */
-  }
+  // v14：HTTP 环境（testnet IP 直访）navigator.clipboard 不存在 → useClipboard 兼容回退
+  const ok = await copyText(refLink.value);
+  if (ok) showToast({ type: "success", message: t("common.copied") });
+  else showToast({ type: "fail", message: t("common.copyFail") });
 }
 
 function share() {

@@ -10,6 +10,7 @@ export default {
     loading: "Loading...",
     copy: "Copy",
     copied: "Copied",
+    copyFail: "Copy failed. Please long-press to copy manually",
     balance: "Balance",
     noWallet: "No wallet detected, please open in TokenPocket / MetaMask",
     rejected: "Connection cancelled",
