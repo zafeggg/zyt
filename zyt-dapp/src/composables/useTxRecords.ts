@@ -34,8 +34,14 @@ export interface TxRecord {
 
 const KEY_PREFIX = "zyt_tx_records_";
 
+// v14：key 加合约代次（chainId + mining 地址）——换合约重新部署后旧记录自动隔离，
+// 避免"新合约页面看到上个版本合约的交易记录"（用户 09-09 反馈的根因）
+import { currentChain } from "../config";
+
 function keyOf(addr: string): string {
-  return KEY_PREFIX + addr.toLowerCase();
+  const c = currentChain();
+  const gen = `${c.chainId}_${(c.contracts.mining || "").slice(-6).toLowerCase()}`;
+  return `${KEY_PREFIX}${gen}_${addr.toLowerCase()}`;
 }
 
 function readAll(addr: string): TxRecord[] {
