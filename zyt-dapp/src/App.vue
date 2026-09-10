@@ -18,10 +18,13 @@ import BottomNav from "./components/BottomNav.vue";
 import InviteGate from "./components/InviteGate.vue";
 import { useInvite } from "./composables/useInvite";
 
+// v14：邀请 gate 总开关（2026-09-10 暂停——改 true 即恢复"无邀请码不得进入"）
+const INVITE_GATE_ENABLED = false;
+
 // URL ?ref= 优先覆盖已存邀请码；无任何邀请 → gate
 const { syncFromUrl, hasInvite } = useInvite();
 syncFromUrl();
-const gated = ref(!hasInvite());
+const gated = ref(INVITE_GATE_ENABLED && !hasInvite());
 </script>
 
 <style scoped lang="scss">
