@@ -84,6 +84,8 @@ function checkAdmin(req) {
   return { ok: false, status: 401, msg: "unauthorized" };
 }
 
+let npCache = { at: 0, value: "" };
+
 export function startApi() {
   const provider = new JsonRpcProvider(CONFIG.rpc, CONFIG.chainId, { staticNetwork: true });
   const pool = new Contract(CONFIG.contracts.pool, POOL_VIEW_ABI, provider);
@@ -139,16 +141,23 @@ export function startApi() {
           if (ca.slice(0, 10) === todayUTC) todayDeposit += BigInt(r.amount || "0");
         }
         // networkPower：遍历链上 userList 用 ledger.powerOf 精确累计（含日复利）
-        let networkPower = 0n;
-        try {
-          const n = Number(await zyt.getUserCount());
-          for (let i = 0; i < n; i++) {
-            const a = await zyt.getUserAt(i);
-            networkPower += await ledger.powerOf(a);
+        // v14：60s 内存缓存——O(users×RPC) 遍历在用户数增长后会让 /stats 明显变慢
+        let networkPower;
+        if (Date.now() - (npCache.at || 0) > 60_000) {
+          try {
+            let sum = 0n;
+            const n = Number(await zyt.getUserCount());
+            for (let i = 0; i < n; i++) {
+              const a = await zyt.getUserAt(i);
+              sum += await ledger.powerOf(a);
+            }
+            npCache.value = String(sum);
+            npCache.at = Date.now();
+          } catch {
+            /* 链上遍历失败沿用旧缓存 */
           }
-        } catch {
-          /* 链上遍历失败返回 0，不阻塞 */
         }
+        networkPower = npCache.value || "0";
         res.end(
           JSON.stringify({
             pool: poolRow,
