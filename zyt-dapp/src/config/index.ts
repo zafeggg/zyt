@@ -11,6 +11,8 @@ export interface ChainConfig {
   rpc: string;
   // 链下服务 API（keeper）基础地址：留空 = 纯合约直连（降级模式）
   apiBase: string;
+  // v15：根邀请码（营销地址）——注册页在无 ?ref= 参数时预填；留空则注册页不预填、仅手输
+  rootInvite: string;
   contracts: {
     config: string;
     gst: string;
@@ -32,6 +34,8 @@ const LOCAL: ChainConfig = {
   chainId: 31337,
   rpc: "http://127.0.0.1:8545",
   apiBase: envApiBase || "http://localhost:8080",
+  // 本地测试：hardhat 账户 #0 充当根邀请码
+  rootInvite: "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
   contracts: {
     // 来自 scripts/deploy.js 本地部署输出
     config: "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512",
@@ -52,6 +56,8 @@ const BSC_TESTNET: ChainConfig = {
   rpc: "https://bsc-testnet-rpc.publicnode.com",
   // v13：testnet 生产同源反代 /api（Nginx 代理 keeper）；联调可 VITE_API_BASE=http://localhost:8080 覆盖
   apiBase: envApiBase || "/api",
+  // 测试网：临时用集成测试钱包占位，正式营销地址确定后替换
+  rootInvite: "0x87C0aF08c0F974E86CAC508faA239bB1Cc2f2241",
   contracts: {
     // 第五套部署地址（2026-09-01，与 smoke-testnet.js / keeper .env 一致）
     config: "0x55F4e5F732ACfa49015AB6546a2766Db7534cDbd",
@@ -70,18 +76,25 @@ const BSC_TESTNET: ChainConfig = {
 const BSC_MAINNET: ChainConfig = {
   name: "BSC",
   chainId: 56,
-  rpc: "https://bsc-dataseed.binance.org",
+  // v15：旧域名 bsc-dataseed.binance.org 国内直连 ECONNRESET，换 publicnode（实测可用）
+  rpc: "https://bsc-rpc.publicnode.com",
   apiBase: envApiBase || "/api", // v13：主网上线同源反代；纯直连可留空用 VITE_API_BASE="" 覆盖
+  // 官方根邀请码 = 营销 Safe 地址（2026-09-14 已链上核验：threshold 2 / owners 3）
+  // 说明：根邀请码当前不参与注册页预填（决策 22），仅作官方码取值与后续运营策略用
+  rootInvite: "0x1bc03Fe18F9BabBc32f0B4046E13e387E9D16786",
   contracts: {
-    config: "",
-    gst: "",
-    zyt: "",
-    forceSell: "",
-    pool: "",
-    referral: "",
-    mining: "",
-    deflation: "",
-    usdt: "0x55d398326f99059fF775485246999027B3197955",
+    // ⚠️ 主网 TestUSDT 试运行版（2026-09-14 部署并 verify，deployments/mainnet-test-20260914.json）
+    // 正式版（真实 USDT）重部署后需整段替换（见上线操作手册附录 E）
+    config: "0x7247791Bd79e831C78B8DCFDF820C43a7386f370",
+    gst: "0x3D4A87Bb1487737b97BD4c86a56EDCA9f794F784",
+    zyt: "0xAB4c090CD436D1d93Aa6D18067A3217206Bd097A",
+    forceSell: "0xD944f0A514b92F9adBc805F7E94E75aD489Af2A6",
+    pool: "0xe2b0DdB48f4455830D38cD765d9b79DBd906c291",
+    referral: "0x74285fC2c76F1C5Ec1912bA6EB2788B353C26970",
+    mining: "0xFC97Bf17243C2ef9A8442c190A1897B61745C830",
+    deflation: "0x95e60944e0DF1846f5498B4b8A678564f9aCDe26",
+    // 试运行版为 TestUSDT（MockERC20，bscscan 已 verify）；正式版替换为真实 USDT 0x55d398326f99059fF775485246999027B3197955
+    usdt: "0x4cd6d10260Cdfc55A9dcf97dfffade73080E7608",
   },
 };
 
