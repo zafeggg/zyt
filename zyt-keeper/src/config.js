@@ -1,5 +1,5 @@
 import dotenv from "dotenv";
-dotenv.config();
+dotenv.config({ path: process.env.ENV_FILE || ".env" }); // v15: 支持多环境并存（ENV_FILE=.env.mainnet 启动主网 keeper）
 
 export const CONFIG = {
   chainId: Number(process.env.CHAIN_ID || 31337),
