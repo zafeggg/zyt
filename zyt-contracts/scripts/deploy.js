@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 /* global ethers hre */
 const { ethers } = require("hardhat");
+const readline = require("node:readline");
 
 /**
  * @notice 众赢币 ZYT 部署脚本（按方案 v6 部署流程）
@@ -11,12 +12,36 @@ const { ethers } = require("hardhat");
  * 用法：
  *   npx hardhat run scripts/deploy.js                 # 本地 hardhat（Mock USDT）
  *   npx hardhat run scripts/deploy.js --network bscTestnet
+ *   npx hardhat run scripts/deploy.js --network bsc   # 主网（.env PRIVATE_KEY，交互确认）
+ *
+ * 私钥约定（2026-09-14 决策）：
+ *   - 部署/owner 私钥 = .env PRIVATE_KEY，仅存本地/部署机，严禁上传服务器、严禁提交 Git
+ *   - keeper 签名私钥 = 服务器 .env KEEPER_PRIVATE_KEY（权限 600，仅触发快照无资金权限）
+ *   - 主网部署需交互输入 yes 确认（脚本化场景设 CONFIRM_MAINNET=1）
  */
 
 const GST_MAX = 333_000_000n * 10n ** 18n;      // 3.33 亿
 const GST_POOL = 21_000n * 10n ** 18n;          // 底池 2.1 万枚
 const ZYT_MAX = 2_100_000_000n * 10n ** 18n;    // 21 亿
 const BLACK_HOLE = "0x000000000000000000000000000000000000dEaD";
+
+/** 主网部署确认（防误操作）：打印网络与 deployer，要求输入 yes；CONFIRM_MAINNET=1 跳过 */
+async function confirmMainnet(deployerAddress) {
+  if (process.env.CONFIRM_MAINNET === "1") return;
+  console.log("\n⚠️  即将在 BSC 主网（chainId 56）执行部署，deployer:", deployerAddress);
+  console.log("   主网交易不可逆。确认网络与地址无误后输入 yes 继续:");
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout, terminal: false });
+  const answer = await new Promise((resolve) =>
+    rl.question("", (v) => {
+      rl.close();
+      resolve(v.trim().toLowerCase());
+    })
+  );
+  if (answer !== "yes") {
+    console.error("未确认，已取消部署");
+    process.exit(1);
+  }
+}
 
 /**
  * @notice 等待链上授权到位（BSC testnet 公共 RPC 多节点最终一致性：
@@ -38,81 +63,97 @@ async function waitAllowance(token, owner, spender, min, label, retries = 15) {
 
 async function main() {
   const [deployer] = await ethers.getSigners();
+  if (!deployer) throw new Error(`网络 ${hre.network.name} 无可用 signer（检查 .env PRIVATE_KEY）`);
   console.log("Deployer:", deployer.address);
+  if (hre.network.name === "bsc") await confirmMainnet(deployer.address);
 
   const network = hre.network.name;
   const isLocal = network === "hardhat" || network === "localhost";
 
+  // 统一 factory 入口：显式绑定 deployer signer（各网络行为一致）
+  const factory = (name, opts = {}) =>
+    ethers.getContractFactory(name, { signer: deployer, ...opts });
+
   // ---------- 1. USDT ----------
   // USDT_MOCK=1：testnet 用 MockERC20（可 faucet），主网用真实 USDT（默认）
   const useMockUsdt = isLocal || process.env.USDT_MOCK === "1";
+  // v15：主网 TestUSDT 试运行模式醒目警告（手册附录 E：试运行后必须重部署正式版）
+  if (useMockUsdt && !isLocal) {
+    console.log("\n⚠️  ===============================================");
+    console.log("⚠️  主网 TestUSDT 试运行模式（USDT_MOCK=1）");
+    console.log("⚠️  本部署使用 TestUSDT（MockERC20），非真实 USDT");
+    console.log("⚠️  仅用于主网试运行；正式运营必须重部署正式版（真实 USDT）");
+    console.log("⚠️  同合约切换 usdt 地址已否决（假币换真币口子），见手册附录 E");
+    console.log("⚠️  ===============================================\n");
+  }
   let usdt;
   if (useMockUsdt) {
-    const Mock = await ethers.getContractFactory("MockERC20");
+    const Mock = await factory("MockERC20");
     usdt = await Mock.deploy("Mock USDT", "USDT", 18);
     await usdt.waitForDeployment();
     // 测试网水龙头：给部署者 5 万 USDT（覆盖 initialize 2.1 万 + 测试入金）
     await (await usdt.faucet(50_000n * 10n ** 18n)).wait();
     console.log("MockUSDT:", await usdt.getAddress());
   } else {
-    // 真实 USDT：包装为合约对象（allowance/approve 统一接口）
+    // 真实 USDT：包装为合约对象（allowance/approve 统一接口），绑定 deployer 签名
     usdt = await ethers.getContractAt(
       "MockERC20",
-      process.env.USDT_MAINNET || "0x55d398326f99059fF775485246999027B3197955"
+      process.env.USDT_MAINNET || "0x55d398326f99059fF775485246999027B3197955",
+      deployer
     );
   }
   const usdtAddr = await usdt.getAddress();
 
   // ---------- 2. ZYTConfig ----------
-  const Config = await ethers.getContractFactory("ZYTConfig");
+  const Config = await factory("ZYTConfig");
   const config = await Config.deploy();
   await config.waitForDeployment();
   const configAddr = await config.getAddress();
   console.log("ZYTConfig:", configAddr);
 
   // ---------- 3. GSTToken ----------
-  const GST = await ethers.getContractFactory("GSTToken");
+  const GST = await factory("GSTToken");
   const gst = await GST.deploy(BLACK_HOLE);
   await gst.waitForDeployment();
   const gstAddr = await gst.getAddress();
   console.log("GSTToken:", gstAddr);
 
   // ---------- 4. ZYTToken ----------
-  const ZYT = await ethers.getContractFactory("ZYTToken");
+  const ZYT = await factory("ZYTToken");
   const zyt = await ZYT.deploy(BLACK_HOLE);
   await zyt.waitForDeployment();
   const zytAddr = await zyt.getAddress();
   console.log("ZYTToken:", zytAddr);
 
   // ---------- 5. ZYTForceSell ----------
-  const ForceSell = await ethers.getContractFactory("ZYTForceSell");
+  const ForceSell = await factory("ZYTForceSell");
   const forceSell = await ForceSell.deploy(zytAddr);
   await forceSell.waitForDeployment();
   const forceSellAddr = await forceSell.getAddress();
   console.log("ZYTForceSell:", forceSellAddr);
 
   // ---------- 6. ZYTPoolManager ----------
-  const Pool = await ethers.getContractFactory("ZYTPoolManager");
+  const Pool = await factory("ZYTPoolManager");
   const pool = await Pool.deploy(configAddr, zytAddr, usdtAddr, gstAddr);
   await pool.waitForDeployment();
   const poolAddr = await pool.getAddress();
   console.log("ZYTPoolManager:", poolAddr);
 
   // ---------- 7. ZYTReferral ----------
-  const Referral = await ethers.getContractFactory("ZYTReferral");
+  const Referral = await factory("ZYTReferral");
   const referral = await Referral.deploy();
   await referral.waitForDeployment();
   const referralAddr = await referral.getAddress();
   console.log("ZYTReferral:", referralAddr);
 
   // ---------- 8. ZYTMining ----------
-  const Compute = await ethers.getContractFactory("ZYTCompute");
+  const Compute = await factory("ZYTCompute");
   const compute = await Compute.deploy();
   await compute.waitForDeployment();
   const computeAddr = await compute.getAddress();
   console.log("ZYTCompute(lib):", computeAddr);
 
-  const Mining = await ethers.getContractFactory("ZYTMining", {
+  const Mining = await factory("ZYTMining", {
     libraries: { ZYTCompute: computeAddr },
   });
   const mining = await Mining.deploy(configAddr, poolAddr, referralAddr, zytAddr, usdtAddr);
@@ -121,7 +162,7 @@ async function main() {
   console.log("ZYTMining:", miningAddr);
 
   // ---------- 9. ZYTDeflation ----------
-  const Deflation = await ethers.getContractFactory("ZYTDeflation");
+  const Deflation = await factory("ZYTDeflation");
   const deflation = await Deflation.deploy(configAddr, poolAddr, miningAddr);
   await deflation.waitForDeployment();
   const deflationAddr = await deflation.getAddress();
@@ -227,7 +268,7 @@ async function main() {
   console.log("ZYTReferral   :", referralAddr);
   console.log("ZYTMining     :", miningAddr);
   console.log("ZYTDeflation  :", deflationAddr);
-  console.log("USDT          :", usdtAddr);
+  console.log("USDT          :", usdtAddr, useMockUsdt && !isLocal ? "（⚠️ TestUSDT 试运行版——正式版需重部署，见附录 E）" : "");
   console.log("Router        :", router);
   console.log("Market        :", market);
   console.log("Technical     :", technical);
