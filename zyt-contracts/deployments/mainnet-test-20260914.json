@@ -1,0 +1,32 @@
+{
+  "env": "bscMainnet (chainId 56)",
+  "stage": "TestUSDT 试运行版（正式版需重部署，见手册附录 E）",
+  "deployedAt": "2026-09-14",
+  "deployer": "0xB7233A003C37Beb100C4eFCF82793D24B90179F9",
+  "deploymentBlock": 121785500,
+  "contracts": {
+    "config": "0x7247791Bd79e831C78B8DCFDF820C43a7386f370",
+    "gst": "0x3D4A87Bb1487737b97BD4c86a56EDCA9f794F784",
+    "zyt": "0xAB4c090CD436D1d93Aa6D18067A3217206Bd097A",
+    "forceSell": "0xD944f0A514b92F9adBc805F7E94E75aD489Af2A6",
+    "pool": "0xe2b0DdB48f4455830D38cD765d9b79DBd906c291",
+    "referral": "0x74285fC2c76F1C5Ec1912bA6EB2788B353C26970",
+    "computeLib": "0x740d83b9b64dFb21Df7C1BD11B3Fa213Fe09400b",
+    "mining": "0xFC97Bf17243C2ef9A8442c190A1897B61745C830",
+    "deflation": "0x95e60944e0DF1846f5498B4b8A678564f9aCDe26",
+    "testUsdt": "0x4cd6d10260Cdfc55A9dcf97dfffade73080E7608"
+  },
+  "wired": {
+    "marketAddress": "0x1bc03Fe18F9BabBc32f0B4046E13e387E9D16786",
+    "technicalAddress": "0x860D4704d6eee98Aa55A971Caf8BAA4134E8eec3",
+    "keeperAddress": "0x09BeD12b5956E1E53668Aa10E242766E3aE3B641",
+    "router": "0x10ED43C718714eb63d5aA57B78B54704E256024E"
+  },
+  "poolInit": { "gst": "21000", "zyt": "2100000000" },
+  "notes": [
+    "TestUSDT faucet 给 deployer 5 万测试币，需分发给测试团队",
+    "白名单开关默认 true，名单空；试运行期需 toggle off 或放行团队地址",
+    "ZYTForceSell.keeper 需 setKeeper(0x09BeD...)",
+    "GST 剩余供应已锁黑洞 0xdEaD"
+  ]
+}
