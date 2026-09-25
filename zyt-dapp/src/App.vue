@@ -1,5 +1,5 @@
 <template>
-  <!-- v14：邀请制入口——无邀请码（且无 skipInvite=1）时全屏 gate，不渲染主应用 -->
+  <!-- v15：注册门禁——gate 内完成钱包连接与链上注册判定（已注册直进，未注册填邀请码注册） -->
   <InviteGate v-if="gated" @pass="gated = false" />
   <div v-else class="app-shell">
     <router-view v-slot="{ Component }">
@@ -16,15 +16,14 @@
 import { ref } from "vue";
 import BottomNav from "./components/BottomNav.vue";
 import InviteGate from "./components/InviteGate.vue";
-import { useInvite } from "./composables/useInvite";
 
-// v14：邀请 gate 总开关（2026-09-10 暂停——改 true 即恢复"无邀请码不得进入"）
-const INVITE_GATE_ENABLED = false;
+// v15：注册门禁常开（判定逻辑在 InviteGate 内：链上 referrerOf 强校验 + localStorage 降级）。
+// 测试逃生：URL 带 skipInvite=1 跳过 gate（不对外宣传）。改 false 即整体关闭门禁。
+const INVITE_GATE_ENABLED = true;
+const escape =
+  location.search.includes("skipInvite=1") || location.hash.includes("skipInvite=1");
 
-// URL ?ref= 优先覆盖已存邀请码；无任何邀请 → gate
-const { syncFromUrl, hasInvite } = useInvite();
-syncFromUrl();
-const gated = ref(INVITE_GATE_ENABLED && !hasInvite());
+const gated = ref(INVITE_GATE_ENABLED && !escape);
 </script>
 
 <style scoped lang="scss">

@@ -5,13 +5,12 @@
       <SlippageBadge :slippage="slippage" />
     </div>
 
-    <!-- 模式切换：卖出 / 入金（v7：非白名单用户禁用入金） -->
+    <!-- v9 三 Tab：入金（全阶段） / 买入（阶段 2 起，真池直换） / 卖出（全阶段） -->
     <van-tabs v-model:active="mode" class="mode-tabs" color="#f5c15d" @change="resetFlow">
+      <van-tab :title="$t('swap.deposit')" name="deposit" />
+      <van-tab :title="$t('swap.buy')" name="buy" :disabled="stageBlocked" />
       <van-tab :title="$t('swap.sell')" name="sell" />
-      <van-tab :title="$t('swap.buy')" name="buy" :disabled="isWhitelisted === false" />
     </van-tabs>
-
-    <div v-if="isWhitelisted === false" class="wl-tip">{{ $t("swap.whitelistTip") }}</div>
 
     <!-- 金额输入 -->
     <div class="input-row">
@@ -28,8 +27,7 @@
           <span class="pct max" @click="setPct(100)">{{ $t("swap.max") }}</span>
         </div>
       </div>
-      <!-- v14：币种随模式锁定（sell=ZYT / buy=USDT），移除误导性选择器：
-           入金仅 USDT、卖出仅 ZYT 是合约冻结规则，tokenSymbol 此前只控制余额显示造成语义错位 -->
+      <!-- v9：币种随模式锁定（deposit/buy=USDT / sell=ZYT） -->
       <div class="token-btn" :style="{ cursor: 'default' }">
         <span class="dot" :style="{ background: tokenColor }" />
         {{ tokenSymbol }}
@@ -37,33 +35,39 @@
     </div>
 
     <div class="meta">
-      <span>{{ $t("common.balance") }}: {{ balance }}</span>
+      <span v-if="mode === 'buy'">{{ $t("swap.buyQuotaAvail") }}: {{ fmtNum(buyQuotaNum) }} U</span>
+      <span v-else>{{ $t("common.balance") }}: {{ balance }}</span>
       <span v-if="mode === 'sell'" class="sliptip">
         {{ $t("swap.slippageTip", { rate: slippage, pct: reductionPct }) }}
       </span>
+      <span v-else-if="mode === 'deposit'" class="sliptip">{{ $t("swap.depositStageTip") }}</span>
     </div>
 
-    <!-- ===== v13：buy 总额明细面板（授权/加池/入金分步透明化） ===== -->
-    <template v-if="mode === 'buy' && isWhitelisted !== false && amountNum > 0">
+    <!-- ===== 入金：40% 生态奖励 + 60% 创建底池，用户获得算力（不发放 ZYT） ===== -->
+    <template v-if="mode === 'deposit' && amountNum > 0">
       <div class="flow-panel">
         <div class="flow-title">{{ $t("swap.flowTitle") }}</div>
         <div class="flow-row"><span>{{ $t("swap.flowDeposit") }}</span><b>{{ fmtNum(amountNum) }} USDT</b></div>
-        <div v-if="needLpNum > 0" class="flow-row">
-          <span>{{ $t("swap.flowLp") }}</span><b>{{ fmtNum(needLpNum) }} USDT</b>
+        <div class="flow-row">
+          <span>{{ $t("swap.flowReward") }}</span><b>{{ fmtNum(amountNum * rewardRatio) }} USDT</b>
+        </div>
+        <div class="flow-row">
+          <span>{{ $t("swap.flowPool") }}</span><b>{{ fmtNum(amountNum * (1 - rewardRatio)) }} USDT</b>
         </div>
         <div class="flow-row total">
-          <span>{{ $t("swap.flowTotal") }}</span><b>{{ fmtNum(amountNum + needLpNum) }} USDT</b>
+          <span>{{ $t("swap.flowTotal") }}</span><b>{{ fmtNum(amountNum) }} USDT</b>
         </div>
-        <div class="flow-row sub">
-          <span>{{ $t("swap.flowTxCount") }}</span><b>{{ needLpNum > 0 ? 2 : 1 }} {{ $t("swap.flowTxs") }}</b>
+        <div class="flow-note">
+          {{ $t("swap.depositRewardNote", { reward: fmtNum(amountNum * rewardRatio) }) }}
         </div>
-        <div class="flow-note">{{ $t("swap.flowGasNote") }}</div>
-        <!-- v13：LP 用途与不可赎回说明（诚实披露，防"重复扣款"误解） -->
-        <div v-if="needLpNum > 0" class="flow-note lp-note">{{ $t("swap.lpExplain") }}</div>
+        <div class="flow-note">
+          {{ $t("swap.depositPoolNote", { pool: fmtNum(amountNum * (1 - rewardRatio)) }) }}
+        </div>
+        <div class="flow-note">{{ $t("swap.depositPowerNote", { power: fmtNum(amountNum) }) }}</div>
+        <div class="flow-note lp-note">{{ $t("swap.depositNoZytNote") }}</div>
         <div v-if="balanceErr" class="flow-err">
-          {{ $t("swap.insufficientBalance", { need: fmtNum(amountNum + needLpNum), bal: balance }) }}
+          {{ $t("swap.insufficientBalance", { need: fmtNum(amountNum), bal: balance }) }}
         </div>
-        <!-- 授权状态与目标合约 -->
         <div class="auth-row">
           <span>{{ $t("swap.approveStatus") }}：</span>
           <b :class="approved ? 'ok' : 'no'">{{ approved ? $t("swap.approved") : $t("swap.notApproved") }}</b>
@@ -73,7 +77,6 @@
         </div>
       </div>
 
-      <!-- v13：分步主按钮（授权 → 加池 → 入金，任一失败不连锁下一步） -->
       <van-button
         v-if="!approved && !busy"
         block
@@ -88,20 +91,7 @@
         {{ $t("swap.approving") }}
       </van-button>
       <van-button
-        v-if="approved && needLpNum > 0 && busy !== 'lp'"
-        block
-        type="warning"
-        :disabled="!walletReady || balanceErr || busy !== ''"
-        class="action-btn lp-btn"
-        @click="doAddLiquidity"
-      >
-        {{ $t("swap.addLiquidityAction", { amt: fmtNum(needLpNum) }) }}
-      </van-button>
-      <van-button v-if="busy === 'lp'" block type="warning" loading class="action-btn lp-btn">
-        {{ $t("swap.lpDoing") }}
-      </van-button>
-      <van-button
-        v-if="approved && needLpNum === 0 && busy !== 'deposit'"
+        v-if="approved && busy !== 'deposit'"
         block
         type="primary"
         :disabled="!walletReady || balanceErr || busy !== ''"
@@ -115,7 +105,55 @@
       </van-button>
     </template>
 
-    <!-- ===== v13：sell 两步（授权 ZYT → 确认卖出） ===== -->
+    <!-- ===== 买入：USDT 真池直换 ZYT（AMM 成交价；阶段 2 消耗买额） ===== -->
+    <template v-else-if="mode === 'buy'">
+      <div class="flow-panel">
+        <div class="flow-row"><span>{{ $t("swap.buyQuotaAvail") }}</span><b>{{ fmtNum(buyQuotaNum) }} U</b></div>
+        <div v-if="amountNum > 0" class="flow-row total">
+          <span>{{ $t("swap.buyPreview") }}</span><b>≈ {{ fmtCompact(buyOut) }} ZYT</b>
+        </div>
+        <div class="flow-note">{{ $t("swap.buyNote") }}</div>
+        <div v-if="stageBlocked" class="flow-err">{{ $t("swap.buyStageTip") }}</div>
+        <div v-else-if="stage2QuotaOver" class="flow-err">
+          {{ $t("swap.buyQuotaExceed", { max: fmtNum(buyQuotaNum) }) }}
+        </div>
+        <div v-if="balanceErr" class="flow-err">
+          {{ $t("swap.insufficientBalance", { need: fmtNum(amountNum), bal: balance }) }}
+        </div>
+        <div class="auth-row">
+          <span>{{ $t("swap.approveStatus") }}：</span>
+          <b :class="approved ? 'ok' : 'no'">{{ approved ? $t("swap.approved") : $t("swap.notApproved") }}</b>
+        </div>
+      </div>
+      <van-button
+        v-if="!approved && busy !== 'approve'"
+        block
+        type="primary"
+        :disabled="!walletReady || balanceErr"
+        class="action-btn"
+        @click="doApprove"
+      >
+        {{ $t("swap.approveAction") }}
+      </van-button>
+      <van-button v-if="busy === 'approve'" block type="primary" loading class="action-btn">
+        {{ $t("swap.approving") }}
+      </van-button>
+      <van-button
+        v-if="approved && busy !== 'buy'"
+        block
+        type="primary"
+        :disabled="!buyReady"
+        class="action-btn"
+        @click="doBuy"
+      >
+        {{ $t("swap.buyAction") }}
+      </van-button>
+      <van-button v-if="busy === 'buy'" block type="primary" loading class="action-btn">
+        {{ $t("swap.buying") }}
+      </van-button>
+    </template>
+
+    <!-- ===== 卖出：授权 ZYT → 确认卖出 ===== -->
     <template v-else-if="mode === 'sell' && amountNum > 0">
       <div class="flow-panel">
         <div class="flow-row"><span>{{ $t("swap.sellAmount") }}</span><b>{{ fmtNum(amountNum) }} ZYT</b></div>
@@ -154,7 +192,7 @@
       </van-button>
     </template>
 
-    <!-- 最近交易结果行（v13：分步交易状态与哈希） -->
+    <!-- 最近交易结果行 -->
     <div v-if="lastTx" class="tx-result" :class="lastTx.status">
       <span>{{ typeText(lastTx.type) }}：{{ statusText(lastTx.status) }}</span>
       <a v-if="lastTx.hash" :href="explorerTx(lastTx.hash)" target="_blank" rel="noreferrer">
@@ -187,8 +225,8 @@ const { address, getSigner } = useWallet();
 const { upsert } = useTxRecords();
 const { getSaved } = useInvite();
 
-const mode = ref<"sell" | "buy">("sell");
-// v14：币种随模式锁定（冻结规则：卖出=ZYT / 入金=USDT），仅作余额显示与金额标签
+/** v9：入金（全阶段）/ 买入（阶段 2 起，真池直换）/ 卖出（全阶段） */
+const mode = ref<"deposit" | "buy" | "sell">("deposit");
 const tokenSymbol = computed(() => (mode.value === "sell" ? "ZYT" : "USDT"));
 const tokenColor = computed(() => (tokenSymbol.value === "ZYT" ? "#f5c15d" : "#26a17b"));
 const amount = ref("");
@@ -198,84 +236,82 @@ const walletReady = computed(() => !!address.value);
 const amountNum = computed(() => parseFloat(amount.value) || 0);
 const balanceNum = computed(() => parseFloat(balance.value) || 0);
 
-// ===== 链上状态（授权/阶段/LP 配额） =====
-const isWhitelisted = ref<boolean | null>(null);
+// ===== 链上状态 =====
 const stageRef = ref(0);
 const allowanceUsdt = ref<bigint>(0n);
 const allowanceZyt = ref<bigint>(0n);
-const lpQuotaWei = ref<bigint>(0n);
+const powerWei = ref<bigint>(0n);
+const buyQuotaWei = ref<bigint>(0n);
+const dynamicExitedRef = ref(false);
+const tradePriceWei = ref<bigint>(0n);
 const miningAddr = ref("");
-// 流程执行中标记："" 空闲 / approve / lp / deposit / zytApprove / sell
-const busy = ref<"" | "approve" | "lp" | "deposit" | "zytApprove" | "sell">("");
+// 流程执行中标记："" 空闲 / approve / deposit / buy / zytApprove / sell
+const busy = ref<"" | "approve" | "deposit" | "buy" | "zytApprove" | "sell">("");
 const lastTx = ref<{ type: TxType; status: TxStatus; hash?: string } | null>(null);
 
 const miningAddrShort = computed(() =>
   miningAddr.value ? `${miningAddr.value.slice(0, 8)}...${miningAddr.value.slice(-6)}` : ""
 );
 
-// buy 侧派生
+// ===== deposit 侧派生 =====
+/** 生态奖励占比：与合约 marketingRate 默认 4000（40%）一致，仅作用于明细展示 */
+const rewardRatio = 0.4;
 const amtWei = computed(() => (amountNum.value > 0 ? parseEther(String(amountNum.value)) : 0n));
-const needLpWei = computed(() => {
-  if (stageRef.value === 2) {
-    const have = lpQuotaWei.value;
-    return amtWei.value > have ? amtWei.value - have : 0n;
-  }
-  return 0n;
+const approved = computed(() => allowanceUsdt.value >= amtWei.value);
+const balanceErr = computed(() => balanceNum.value < amountNum.value);
+
+// ===== buy 侧派生（v9 真池直换） =====
+/** 阶段未知（stageRef=0，加载中）不禁用，避免误挡；一旦读到 1 则禁用 */
+const stageBlocked = computed(() => stageRef.value !== 0 && stageRef.value < 2);
+const buyQuotaNum = computed(() => Number(formatEther(buyQuotaWei.value)));
+/** 阶段 2 消耗买额（1:1）；阶段 3 自由。stageRef=3 时不限制 */
+const stage2QuotaOver = computed(() => stageRef.value === 2 && amtWei.value > buyQuotaWei.value);
+const buyOut = computed(() => {
+  if (tradePriceWei.value <= 0n || amtWei.value <= 0n) return "0";
+  // 按实时价估算（实际以 AMM 成交为准，含 0.25% fee 与滑点）
+  return formatEther((amtWei.value * 10n ** 18n) / tradePriceWei.value);
 });
-const needLpNum = computed(() => Number(formatEther(needLpWei.value)));
-/** 授权需求 = 加池缺额 + 入金额（一次授权覆盖两笔 transferFrom） */
-const approveNeedWei = computed(() => amtWei.value + needLpWei.value);
-const approved = computed(() => allowanceUsdt.value >= approveNeedWei.value);
-const balanceErr = computed(
-  () => mode.value === "buy" ? balanceNum.value < amountNum.value + needLpNum.value
-    : balanceNum.value < amountNum.value
+const buyReady = computed(
+  () =>
+    !!address.value &&
+    !stageBlocked.value &&
+    !stage2QuotaOver.value &&
+    !balanceErr.value &&
+    amountNum.value > 0 &&
+    busy.value === ""
 );
 
-// sell 侧派生
+// ===== sell 侧派生 =====
 const zytApproved = computed(() => allowanceZyt.value >= amtWei.value);
 
 // ===== 数据加载 =====
 async function loadChainState() {
   if (!address.value) return;
   try {
-    const { usdt, mining, pool, config } = getContracts(false);
+    const { usdt, mining, pool } = getContracts(false);
     const miningA = await mining.getAddress();
     miningAddr.value = miningA;
     const stage = Number(await pool.getStage());
     stageRef.value = stage;
-    const cfg = currentChain().contracts;
-    // 授权额度
-    const [au, info] = await Promise.all([
+    // v9：一次性读取授权、用户账本（8 元组）、当日快照价（买入预估用）
+    const [au, info, price] = await Promise.all([
       usdt.allowance(address.value, miningA),
-      stage === 2 ? mining.userInfo(address.value) : Promise.resolve(null),
+      mining.userInfo(address.value),
+      pool.getPrice(),
     ]);
     allowanceUsdt.value = au;
-    if (stage === 2 && info) lpQuotaWei.value = BigInt(info[5] ?? 0);
-    else lpQuotaWei.value = 0n;
+    tradePriceWei.value = price;
+    powerWei.value = BigInt(info[2] ?? 0);
+    buyQuotaWei.value = BigInt(info[5] ?? 0);
+    dynamicExitedRef.value = !!info[7];
     // sell 授权（zyt → pool）
     if (mode.value === "sell") {
       const { zyt } = getContracts(false);
-      const poolAddr = cfg.pool;
+      const poolAddr = currentChain().contracts.pool;
       allowanceZyt.value = await zyt.allowance(address.value, poolAddr);
     }
   } catch {
     /* 读失败保持现值，不阻塞 */
-  }
-}
-
-async function loadWhitelist() {
-  isWhitelisted.value = null;
-  if (!address.value) return;
-  try {
-    const { pool, config } = getContracts(false);
-    const enabled = await config.buyWhitelistEnabled();
-    if (!enabled) {
-      isWhitelisted.value = true;
-      return;
-    }
-    isWhitelisted.value = await pool.buyWhitelist(address.value);
-  } catch {
-    isWhitelisted.value = true;
   }
 }
 
@@ -301,11 +337,9 @@ watch(
     if (a) {
       setSigner(await getSigner());
       resetFlow();
-      await loadWhitelist();
       await Promise.all([loadChainState(), loadBalance()]);
     } else {
-      isWhitelisted.value = null;
-      resetFlow();
+          resetFlow();
     }
   },
   { immediate: true }
@@ -333,6 +367,8 @@ function typeText(type: TxType): string {
     approve: t("records.approve"),
     addLiquidity: t("records.addLiquidity"),
     deposit: t("records.deposit"),
+    buy: t("swap.buy"),
+    convert: t("swap.convert"),
     sell: t("records.sell"),
     reward: t("records.reward"),
     dividend: t("records.dividend"),
@@ -355,44 +391,24 @@ function explorerTx(h: string): string {
   return `${base}/tx/${h}`;
 }
 
-// ===== 操作：buy 三步 =====
+// ===== 操作：入金 =====
 async function doApprove() {
   const id = newTxId();
   busy.value = "approve";
   try {
     const { usdt, mining } = getContracts(true);
     const miningA = await mining.getAddress();
-    const tx = await usdt.approve(miningA, approveNeedWei.value);
-    record(id, "approve", "pending", { spend: `${Number(formatEther(approveNeedWei.value))} USDT`, hash: tx.hash });
+    const tx = await usdt.approve(miningA, amtWei.value);
+    record(id, "approve", "pending", { spend: `${Number(formatEther(amtWei.value))} USDT`, hash: tx.hash });
     await tx.wait();
-    record(id, "approve", "success", { spend: `${Number(formatEther(approveNeedWei.value))} USDT`, hash: tx.hash, detail: t("swap.approveTarget") + " " + miningA });
-    await loadChainState();
-  } catch (e: any) {
-    if (e?.code !== 4001) record(id, "approve", "fail", {});
-    showFailToast(e?.shortMessage || e?.message || "FAIL");
-  } finally {
-    busy.value = "";
-  }
-}
-
-async function doAddLiquidity() {
-  const id = newTxId();
-  busy.value = "lp";
-  try {
-    const { mining } = getContracts(true);
-    const need = needLpWei.value;
-    if (need <= 0n) return;
-    const tx = await mining.addLiquidity(need);
-    record(id, "addLiquidity", "pending", { spend: `${Number(formatEther(need))} USDT`, hash: tx.hash });
-    await tx.wait();
-    record(id, "addLiquidity", "success", {
-      spend: `${Number(formatEther(need))} USDT`,
-      receive: `${Number(formatEther(need))} U ${t("records.lpQuotaUnit")}`,
+    record(id, "approve", "success", {
+      spend: `${Number(formatEther(amtWei.value))} USDT`,
       hash: tx.hash,
+      detail: t("swap.approveTarget") + " " + miningA,
     });
     await loadChainState();
   } catch (e: any) {
-    if (e?.code !== 4001) record(id, "addLiquidity", "fail", {});
+    if (e?.code !== 4001) record(id, "approve", "fail", {});
     showFailToast(e?.shortMessage || e?.message || "FAIL");
   } finally {
     busy.value = "";
@@ -409,17 +425,20 @@ async function doDeposit() {
     const tx = await mining.deposit(amt, refAddr());
     record(id, "deposit", "pending", { spend: `${Number(formatEther(amt))} USDT`, hash: tx.hash });
     await tx.wait();
-    // 获得 ZYT 估算：按入金后池数据由上层 refresh 刷新，本地记录给出成交 ZYT 估算（快照价 * 池投入）
+    const n = Number(formatEther(amt));
     record(id, "deposit", "success", {
-      spend: `${Number(formatEther(amt))} USDT`,
-      detail: t("records.depositDetail", { marketing: Math.round(Number(formatEther(amt)) * 0.4), pool: Math.round(Number(formatEther(amt)) * 0.6) }),
+      spend: `${n} USDT`,
+      receive: `${fmtNum(n)} ${t("home.powerUnit")}`,
+      detail: t("records.depositDetail", {
+        marketing: Math.round(n * rewardRatio),
+        pool: Math.round(n * (1 - rewardRatio)),
+      }),
       hash: tx.hash,
     });
     amount.value = "";
     await Promise.all([loadChainState(), loadBalance()]);
     await props.refresh();
   } catch (e: any) {
-    // 部分完成提示：若前序（授权/加池）已完成而本步失败，由 lastTx/记录可见
     if (e?.code !== 4001) record(id, "deposit", "fail", {});
     showFailToast(e?.shortMessage || e?.message || "FAIL");
   } finally {
@@ -427,7 +446,36 @@ async function doDeposit() {
   }
 }
 
-// ===== 操作：sell 两步 =====
+// ===== 操作：买入（v9 真池直换；approve USDT → mining） =====
+async function doBuy() {
+  const id = newTxId();
+  busy.value = "buy";
+  try {
+    const { mining } = getContracts(true);
+    const v = amtWei.value;
+    if (v <= 0n) return;
+    const out = buyOut.value;
+    const tx = await mining.buy(v);
+    record(id, "buy", "pending", { spend: `${fmtNum(amountNum.value)} USDT`, hash: tx.hash });
+    await tx.wait();
+    record(id, "buy", "success", {
+      spend: `${fmtNum(amountNum.value)} USDT`,
+      receive: `≈ ${fmtCompact(out)} ZYT`,
+      detail: t("records.buyDetail", { usdt: fmtNum(amountNum.value) }),
+      hash: tx.hash,
+    });
+    amount.value = "";
+    await Promise.all([loadChainState(), loadBalance()]);
+    await props.refresh();
+  } catch (e: any) {
+    if (e?.code !== 4001) record(id, "buy", "fail", {});
+    showFailToast(e?.shortMessage || e?.message || "FAIL");
+  } finally {
+    busy.value = "";
+  }
+}
+
+// ===== 操作：卖出 =====
 async function doApproveZyt() {
   const id = newTxId();
   busy.value = "zytApprove";
@@ -473,16 +521,26 @@ async function doSell() {
   }
 }
 
+/** 百分比快捷：兑换按可兑换额度取比例，其余按钱包余额 */
 function setPct(p: number) {
-  const b = balanceNum.value;
-  if (!b) return;
-  amount.value = ((b * p) / 100).toFixed(4);
+  const base = balanceNum.value;
+  if (!base) return;
+  amount.value = ((base * p) / 100).toFixed(4);
   resetFlow();
 }
 
-function fmtNum(n: number): string {
-  if (n >= 1000) return n.toFixed(2);
-  return n.toFixed(4).replace(/\.?0+$/, "") || "0";
+function fmtNum(n: number | string): string {
+  const v = typeof n === "string" ? parseFloat(n) : n;
+  if (isNaN(v)) return "0";
+  return v.toFixed(4).replace(/\.?0+$/, "") || "0";
+}
+
+function fmtCompact(n: string): string {
+  const v = parseFloat(n);
+  if (isNaN(v)) return "0";
+  if (v >= 1e8) return (v / 1e8).toFixed(2) + "亿";
+  if (v >= 1e4) return (v / 1e4).toFixed(2) + "万";
+  return v.toFixed(2);
 }
 
 /** 入金推荐人：URL ?ref= 优先，其次邀请 gate 存储的邀请码，否则零地址 */
@@ -573,17 +631,6 @@ function refAddr(): string {
     text-align: right;
   }
 }
-.wl-tip {
-  margin: 8px 2px;
-  padding: 8px 10px;
-  border-radius: var(--radius-sm);
-  background: rgba(245, 193, 93, 0.12);
-  border: 1px solid rgba(245, 193, 93, 0.3);
-  color: var(--gold);
-  font-size: 12px;
-  line-height: 1.5;
-}
-// v13：流程明细面板
 .flow-panel {
   background: var(--bg-card);
   border: 1px solid var(--border);
@@ -657,11 +704,7 @@ function refAddr(): string {
   height: 46px;
   font-size: 16px;
   margin-top: 4px;
-  &.lp-btn {
-    --van-button-warning-color: #1a1206;
-  }
 }
-// 最近交易结果
 .tx-result {
   margin-top: 10px;
   font-size: 12px;

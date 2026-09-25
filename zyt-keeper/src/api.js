@@ -3,7 +3,7 @@ import { CONFIG } from "./config.js";
 import { getDb } from "./db.js";
 import { Ledger } from "./ledger.js";
 import { JsonRpcProvider, Contract } from "ethers";
-import { POOL_VIEW_ABI } from "./abis.js";
+import { POOL_VIEW_ABI, CREATOR_VIEW_ABI, MINING_USERINFO_ABI } from "./abis.js";
 import { logRun } from "./alert.js";
 import { computeForceSell } from "./forcesell.js";
 
@@ -85,13 +85,57 @@ function checkAdmin(req) {
 }
 
 let npCache = { at: 0, value: "" };
+/** v9：Creator（锁仓合约）累计数据缓存（60s；未接线或读取失败为 null） */
+let creatorCache = { at: 0, value: null };
+
+/**
+ * v9：读取锁仓合约累计数据（初始建池 + 每日通缩报销）。
+ * - CREATOR_ADDR 未配置或读取失败 → null（前端展示 -- ，不以 0 冒充）
+ * - 60s 缓存，避免每次 /stats 都打 5 个 RPC 调用
+ */
+async function readCreator(creator) {
+  if (Date.now() - creatorCache.at <= 60_000) return creatorCache.value;
+  let value = null;
+  if (creator) {
+    try {
+      const [locked, zytSeeded, usdtSeeded, deflZyt, deflUsdt] = await Promise.all([
+        creator.lockedLiquidity(),
+        creator.totalZytSeeded(),
+        creator.totalUsdtSeeded(),
+        creator.totalDeflationZytOut(),
+        creator.totalDeflationUsdtOut(),
+      ]);
+      value = {
+        lockedLiquidity: String(locked),
+        totalZytSeeded: String(zytSeeded),
+        totalUsdtSeeded: String(usdtSeeded),
+        totalDeflationZytOut: String(deflZyt),
+        totalDeflationUsdtOut: String(deflUsdt),
+      };
+    } catch {
+      value = null; // 下一轮重试
+    }
+  }
+  creatorCache = { at: Date.now(), value };
+  return value;
+}
 
 export function startApi() {
   const provider = new JsonRpcProvider(CONFIG.rpc, CONFIG.chainId, { staticNetwork: true });
   const pool = new Contract(CONFIG.contracts.pool, POOL_VIEW_ABI, provider);
-  const zyt = new Contract(CONFIG.contracts.zyt, ["function getUserCount() view returns (uint256)", "function getUserAt(uint256) view returns (address)"], provider);
-  const mining = new Contract(CONFIG.contracts.mining, ["function userInfo(address) view returns (uint256,uint256,uint256,uint256,uint256,uint256,bool)"], provider);
+  const zyt = new Contract(CONFIG.contracts.zyt, ["function getUserCount() view returns (uint256)", "function getUserAt(uint256) view returns (address)", "function totalSupply() view returns (uint256)"], provider);
+  const mining = new Contract(CONFIG.contracts.mining, MINING_USERINFO_ABI, provider);
+  // v9.1：config 实例（/stats 读 zytMaxSupply 计算累计销毁 = 上限 − 现存）
+  const config = new Contract(
+    CONFIG.contracts.config,
+    ["function zytMaxSupply() view returns (uint256)"],
+    provider
+  );
+  // v17：底池创建合约（未配置地址时为 null，/stats 的 creator 字段返回 null）
+  const creator = CONFIG.contracts.creator ? new Contract(CONFIG.contracts.creator, CREATOR_VIEW_ABI, provider) : null;
   const ledger = new Ledger(provider, { pool, zyt, mining });
+  /** v9.1：分红预估缓存（30s；键=地址，防前端轮询打爆公共 RPC） */
+  const divCache = new Map();
   const limiter = createRateLimiter(CONFIG.api.rateLimitPerMin);
 
   const server = http.createServer(async (req, res) => {
@@ -129,16 +173,33 @@ export function startApi() {
       if (path === "/stats") {
         const poolRow = await db.get("SELECT * FROM pool_state WHERE id=1");
         const snap = await db.get("SELECT * FROM snapshots ORDER BY day DESC LIMIT 1");
-        // v14：统计指标扩展（burned/todayDeposit/networkPower）——burned/today 从 events 聚合（快照表 burned 列未入库）
-        const burnedRows = await db.all("SELECT amount FROM events WHERE name='PoolBurned'");
-        let burned = 0n;
-        for (const r of burnedRows) burned += BigInt(r.amount || "0");
+        // v9.1：burned 改链上直读（上限 − 现存 = 累计销毁），不再依赖 Deflated 事件聚合
+        // 原因：公共 RPC（publicnode/官方）对老区块 getLogs 剪枝，历史事件会丢失导致 burned 恒为 0
+        let burned = "0";
+        let lpBurned = "0";
+        try {
+          const [cap, supply, lpB] = await Promise.all([
+            config.zytMaxSupply(),
+            zyt.totalSupply(),
+            pool.totalLpBurned(),
+          ]);
+          burned = (BigInt(cap) - BigInt(supply)).toString();
+          lpBurned = lpB.toString();
+        } catch {
+          burned = "0";
+          lpBurned = "0";
+        }
         const todayUTC = new Date().toISOString().slice(0, 10);
         const depRows = await db.all("SELECT amount, created_at FROM events WHERE name='Deposited'");
         let todayDeposit = 0n;
         for (const r of depRows) {
           const ca = String(r.created_at || "");
-          if (ca.slice(0, 10) === todayUTC) todayDeposit += BigInt(r.amount || "0");
+          // created_at 兼容两种存储：unix 秒（数值）→ 转 ISO 日期；ISO 字符串 → 直接取前 10 位
+          // （2026-09-24 修复：原实现对 unix 秒直接 slice，恒不等于 YYYY-MM-DD，todayDeposit 恒为 0）
+          const day = ca.includes("-")
+            ? ca.slice(0, 10)
+            : new Date(Number(ca) * 1000).toISOString().slice(0, 10);
+          if (day === todayUTC) todayDeposit += BigInt(r.amount || "0");
         }
         // networkPower：遍历链上 userList 用 ledger.powerOf 精确累计（含日复利）
         // v14：60s 内存缓存——O(users×RPC) 遍历在用户数增长后会让 /stats 明显变慢
@@ -158,13 +219,17 @@ export function startApi() {
           }
         }
         networkPower = npCache.value || "0";
+        // v17：底池创建累计（未接线 → null）
+        const creatorData = await readCreator(creator);
         res.end(
           JSON.stringify({
             pool: poolRow,
             lastSnapshot: snap,
             burned: String(burned),
+            lpBurned: String(lpBurned ?? "0"),
             todayDeposit: String(todayDeposit),
             networkPower: String(networkPower),
+            creator: creatorData,
           })
         );
         return;
@@ -173,11 +238,30 @@ export function startApi() {
         const addr = path.slice(6).toLowerCase();
         const row = await db.get("SELECT * FROM users WHERE address=?", [addr]);
         const power = row ? await ledger.powerOf(row.address) : 0n;
+        // 2026-09-24：补充买入额度（userInfo[5] = buyQuota - buyUsed，前端 QuotaCard 展示）
+        // users 表无买额列（买额纯链上状态），失败回退空串由前端显示 --
+        // 同批补充：静态出局线 withdraw_cap = depositTotal×2 + 受赠（transferValueOf 链上口径）
+        let buyQuotaLeft = "";
+        let withdrawCap = "";
+        try {
+          const info = await mining.userInfo(addr);
+          buyQuotaLeft = info[5]?.toString() ?? "";
+        } catch {
+          buyQuotaLeft = "";
+        }
+        try {
+          const tv = await mining.transferValueOf(addr);
+          withdrawCap = tv[1]?.toString() ?? "";
+        } catch {
+          withdrawCap = "";
+        }
         res.end(
           JSON.stringify({
             address: addr,
             ...(row || {}),
             power: String(power),
+            buy_quota_left: buyQuotaLeft,
+            withdraw_cap: withdrawCap,
           })
         );
         return;
@@ -189,11 +273,73 @@ export function startApi() {
       }
       if (path.startsWith("/records/")) {
         const addr = path.slice(9).toLowerCase();
+        // tx_hash AS hash：前端 KeeperRecord 读 hash 字段；created_at 兜底行时间
         const rows = await db.all(
-          "SELECT name, from_addr, to_addr, amount, extra, block, tx_hash FROM events WHERE from_addr=? OR to_addr=? ORDER BY block DESC LIMIT 100",
+          "SELECT name, from_addr, to_addr, amount, extra, block, tx_hash AS hash, created_at FROM events WHERE from_addr=? OR to_addr=? ORDER BY block DESC LIMIT 100",
           [addr, addr]
         );
         res.end(JSON.stringify(rows));
+        return;
+      }
+      if (path.startsWith("/dividend/")) {
+        const addr = path.slice(10).toLowerCase();
+        // 2026-09-25：分红预估（与合约 _settleDividend 同公式，链下预演，含今日待结算）
+        // - claimable：链上 pendingDividend（已结算未提取）
+        // - settleable：游标..昨日 之间尚未结算的份额（点击提取即可入账）
+        // - todayAccrual：今日份额（合约按日隔离，次日后才可结算）
+        const cacheKey = `${addr}`;
+        const hit = divCache.get(cacheKey);
+        if (hit && Date.now() - hit.at < 30_000) {
+          res.end(JSON.stringify(hit.value));
+          return;
+        }
+        try {
+          const today = Math.floor(Date.now() / 86400000);
+          const [dv, row, info] = await Promise.all([
+            mining.dividendOf(addr),
+            db.get("SELECT power_day FROM users WHERE address=?", [addr]),
+            mining.userInfo(addr),
+          ]);
+          const claimable = BigInt(dv[0]);
+          let cursor = Number(dv[1]);
+          const powerDay = row ? Number(row.power_day || 0) : 0;
+          if (cursor === 0) cursor = powerDay; // 与合约一致：未初始化游标时从入金日起算
+          if (cursor < powerDay) cursor = powerDay;
+          // 算力口径：用链上 userInfo.power（当日现值，权威）反向复利推历史日，
+          // 避免链下账本用「入库时间」近似 power_day 造成 1% 量级偏差
+          const ONE = 10n ** 18n;
+          const powerToday = BigInt(info[2]);
+          let settleable = 0n;
+          let todayAccrual = 0n;
+          // 上限 40 天（MAX_SETTLE_DAYS 口径的保守展开），防极端游标导致 RPC 风暴
+          const from = Math.max(cursor, today - 40);
+          for (let d = from; d <= today; d++) {
+            const di = await mining.dailyInfo(d);
+            const divAmt = BigInt(di[1]);
+            const dayPower = BigInt(di[0]);
+            if (divAmt === 0n || dayPower === 0n || powerToday === 0n) continue;
+            const elapsed = today - d;
+            const up =
+              elapsed <= 0 ? powerToday : (powerToday * ONE) / ledger._compound(ONE, elapsed);
+            if (up === 0n) continue;
+            const share = (divAmt * up) / dayPower;
+            if (d < today) settleable += share;
+            else todayAccrual += share;
+          }
+          const value = {
+            address: addr,
+            claimable: claimable.toString(),
+            settleable: settleable.toString(),
+            todayAccrual: todayAccrual.toString(),
+            total: (claimable + settleable + todayAccrual).toString(),
+            cursorDay: cursor,
+            today,
+          };
+          divCache.set(cacheKey, { at: Date.now(), value });
+          res.end(JSON.stringify(value));
+        } catch (e) {
+          res.end(JSON.stringify({ address: addr, error: String(e.message).slice(0, 120) }));
+        }
         return;
       }
       if (path.startsWith("/force-sell/")) {

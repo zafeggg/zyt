@@ -10,6 +10,7 @@ import "@openzeppelin/contracts/access/Ownable.sol";
  *         0-15 天需卖出持币 20%；15-30 / 30-45 / 45-60 天各需 10%。
  *         到期未卖足 → 差额自动销毁。转账视同卖出，接收方同样启动。
  *         被 ZYTToken 的 _update hook 调用；V8 新增 settleExpired 供 Keeper 定期结算到期义务。
+ *         P1-13：settleExpired 以窗口位图去重，同一窗口只结算一次，防 Keeper 重复调用导致递归销毁。
  */
 contract ZYTForceSell is Ownable {
     uint256 public constant WINDOW = 15 days;
@@ -26,9 +27,12 @@ contract ZYTForceSell is Ownable {
     mapping(address => uint256) public firstReceiveTime;
     mapping(address => uint256) public soldAmount; // 累计卖出量（转账视同卖出；V9：销毁不扣减）
     mapping(address => bool) public initialized;
+    // P1-13：窗口结算位图。bit i 置位表示第 i+1 窗口已由 Keeper 结算过。
+    mapping(address => uint256) public settledWindows;
 
     event FirstReceive(address indexed user, uint256 time);
     event ForceSellBurned(address indexed user, uint256 amount, uint256 window);
+    event WindowSettled(address indexed user, uint256 window);
 
     constructor(address token_) Ownable(msg.sender) {
         token = token_;
@@ -73,7 +77,10 @@ contract ZYTForceSell is Ownable {
         uint256 elapsed = block.timestamp - firstReceiveTime[from];
         if (elapsed >= WINDOW) {
             uint256 targetBps = _targetBps(elapsed);
-            uint256 bal = IERC20View(token).balanceOf(from);
+            // P1-9 修复：required 以「转账前余额（持币总量）」为基数。
+            // 本函数由 ZYTToken._update 在 super._update 之后调用，此时 from 的余额已扣减 amount，
+            // 直接读余额会让应卖门槛随转账同步缩小（转出越多门槛越低），与「持币总量 20%」的口径不符。
+            uint256 bal = IERC20View(token).balanceOf(from) + amount;
             uint256 required = bal * targetBps / 10000;
             if (soldAmount[from] < required) {
                 uint256 deficit = required - soldAmount[from];
@@ -96,6 +103,16 @@ contract ZYTForceSell is Ownable {
         require(initialized[user], "FS: not init");
         uint256 elapsed = block.timestamp - firstReceiveTime[user];
         if (elapsed < WINDOW) return 0; // 未到期
+
+        uint256 win = _currentWindow(elapsed);
+        uint256 bit = 1 << (win - 1);
+        // P1-13 修复：同一窗口只结算一次。
+        // 原实现每次调用都按「当前余额 × 目标比例」重算 required，而 V9 规定销毁不扣减 soldAmount，
+        // 于是余额下降使下次 required 同步下降，形成递归衰减：余额 1000 在 20% 窗口被连续调用四次
+        // 会依次销毁 200 / 160 / 128 / 102.4，四天蚀掉约 59%。Keeper 一旦定期调用就是持续抽水。
+        if ((settledWindows[user] & bit) != 0) return 0;
+        settledWindows[user] |= bit;
+
         uint256 targetBps = _targetBps(elapsed);
         uint256 bal = IERC20View(token).balanceOf(user);
         uint256 required = bal * targetBps / 10000;
@@ -104,14 +121,18 @@ contract ZYTForceSell is Ownable {
             burned = deficit < bal ? deficit : bal;
             if (burned > 0) {
                 IERC20Burnable(token).burnFrom(user, burned); // forceSell 为授权 burner
-                emit ForceSellBurned(user, burned, _currentWindow(elapsed));
+                emit ForceSellBurned(user, burned, win);
             }
         }
+        emit WindowSettled(user, win);
     }
 
-    /// @notice 当前累计应卖目标（基点）：15d=20%、30d=30%、45d=40%、60d+=60%
+    /// @notice 当前累计应卖目标（基点）：15d=20%、30d=30%、45d=40%、60d+=50%
+    /// @dev 口径（2026-09-22 用户确认）：每期最低卖出比例为 20% / 10% / 10% / 10%，
+    ///      逐期累计即 20% / 30% / 40% / 50%。常量加总 = 5000，与累计口径一致。
+    ///      （原注释误写 60%，与常量加总不符，此处已更正）
     function _targetBps(uint256 elapsed) internal pure returns (uint256) {
-        if (elapsed >= 4 * WINDOW) return WINDOW1_TARGET + WINDOW2_TARGET + WINDOW3_TARGET + WINDOW4_TARGET; // 60%
+        if (elapsed >= 4 * WINDOW) return WINDOW1_TARGET + WINDOW2_TARGET + WINDOW3_TARGET + WINDOW4_TARGET; // 50%
         if (elapsed >= 3 * WINDOW) return WINDOW1_TARGET + WINDOW2_TARGET + WINDOW3_TARGET;           // 40%
         if (elapsed >= 2 * WINDOW) return WINDOW1_TARGET + WINDOW2_TARGET;                           // 30%
         return WINDOW1_TARGET;                                                                      // 20%

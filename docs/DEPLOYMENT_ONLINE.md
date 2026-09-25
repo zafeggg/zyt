@@ -1,5 +1,9 @@
 # ZYT 众赢币 — 生产部署上线操作手册
 
+
+> **⚠️ v9 口径变更（2026-09-24）**：本文撰写时为 v8 口径（含 GST）。v9 已弃 GST 改 USDT↔ZYT 直换（真池），
+> 合约 10→8、deploy.js 自动建池、Router 不再需要。涉及 GST/Router/手动建池的步骤以
+> 《众赢币(ZYT)_上线操作手册》顶部「v9 口径变更说明」与《众赢币(ZYT)_合约接口参考.md》（v9 全量重写）为准。
 > 适用项目: ZYT 众赢币 (基于 BSC 公链 chainId=56)  
 > 版本: v1.0 (2026-09-02) | 状态: 待执行  
 > 本文档为纯操作指引，每一步均包含「做什么 / 怎么做 / 怎么验证」。执行时按顺序逐项完成并勾选。
@@ -11,7 +15,7 @@
 
 | 项目             | 当前值 (主网部署后填写)                                | 说明                                     |
 | ---------------- | ------------------------------------------------- | -------------------------------------- |
-| 前端托管          | **待定**（独立域名/CDN，不使用 GYT 服务器）                  | 前端 SPA 静态托管方案需在上线前确定                  |
+| 前端托管          | **境外静态托管**（Cloudflare Pages / Vercel / 境外 VPS）      | 2026-09-10 定案：境内云主机承载前端会被内容安全判违规并下线（阿里云事件）；禁止使用大陆 ECS/GYT 服务器 |
 | 域名             | 待定 (示例: zyt.com / api.zyt.com)                  | 前端 + keeper API 各一个域名                  |
 | BSC RPC         | `https://bsc-dataseed.binance.org`               | BSC 主网 RPC（备选 bsc-dataseed1/2）         |
 | BSC ChainId     | `56`                                             |                                          |
@@ -36,6 +40,8 @@
 ## 一、服务器初始化（若采用自托管）
 
 **做什么**: 拿到一台干净的 Ubuntu 22.04 服务器，完成基础安全配置。（若前端走 CDN 静态托管、keeper 用其他 24h 运行环境，跳过本节但保留安全基线。）
+
+> ⚠️ **主机位置约束（2026-09-10）**：承载前端或对外 API 的服务器必须是**境外主机**；境内云主机（阿里云/腾讯云大陆节点）承载币圈前端已实测被判「涉嫌欺诈」并下发整改通知，同时未备案域名解析境内主机会被阻断。境内资源仅限内部用途。
 
 **怎么做**:
 
@@ -212,8 +218,8 @@ ZYT_ADDR=0x待填
 USDT_ADDR=0x55d398326f99059fF775485246999027B3197955   # BSC 主网 USDT
 FORCESELL_ADDR=0x待填
 
-# ============ 快照定时 (北京 08:00 = UTC 0 点，tz 显式指定) ============
-SNAPSHOT_CRON=0 0 * * *
+# ============ 快照定时 (北京 08:01 = UTC 00:01，tz 显式指定) ============
+SNAPSHOT_CRON=1 0 * * *
 SNAPSHOT_CRON_TZ=UTC
 RETRY_TIMES=3
 RETRY_DELAY_MS=30000
@@ -255,7 +261,7 @@ chmod 600 /opt/zyt/zyt/zyt-keeper/.env
 ```bash
 cd /opt/zyt/zyt/zyt-keeper && node src/index.js
 # 期望输出: service start chain=56 / ledger rebuild users=N /
-#           keeper start cron="0 0 * * *" tz=UTC / api start :8080 / reconcile ok
+#           keeper start cron="1 0 * * *" tz=UTC / api start :8080 / reconcile ok
 # 验证后 Ctrl+C 停止
 curl http://localhost:8080/health      # {"ok":true,...}
 curl http://localhost:8080/stats       # pool_state + 最近快照
@@ -292,7 +298,7 @@ mysql -u zyt_keeper_app -p zyt_keeper -e "
 
 ## 七、PM2 守护 keeper
 
-**做什么**: 用 PM2 管理 keeper 进程，崩溃自动重启 + 开机自启（保持每日 08:00 快照触发可靠）。
+**做什么**: 用 PM2 管理 keeper 进程，崩溃自动重启 + 开机自启（保持每日 08:01 快照触发可靠）。
 
 **怎么做**:
 
@@ -500,7 +506,7 @@ scp -r F:\zyt\zyt-dapp\dist zyt@服务器IP:/opt/zyt/zyt/zyt-dapp/
 | 6 | 钱包连接       | MetaMask/TokenPocket 连接；主网 chainId=56 校验                            | 钱包显示已连接 + 网络为 BSC 主网                             |
 | 7 | 读链路        | 首页查看池状态/价格/阶段/滑点档位                                                | 与 keeper API / 链上一致                               |
 | 8 | 写链路        | USDT 授权 → 入金（小额）→ 算力/产出/分红领取 → 卖出 → 转账                              | 交易走钱包签名上链；数值符合模型（入金×5 额度、2 倍出局、10% 转账税）        |
-| 9 | 快照触发       | 观察次日 08:00 后：`SELECT * FROM snapshots ORDER BY day DESC LIMIT 3`       | 当日快照存在；通缩 2% 生效；对账 diff=0                        |
+| 9 | 快照触发       | 观察次日 08:01 后：`SELECT * FROM snapshots ORDER BY day DESC LIMIT 3`       | 当日快照存在；通缩 2% 生效；对账 diff=0                        |
 | 10 | 对账          | keeper 日志 / `reconcile_results` 表                                      | status=ok, diff_users=0                            |
 | 11 | CORS/限流     | 从 zyt.com 页面观察 API 请求；连续高频请求                                      | 无跨域报错；超限返回 429                                 |
 | 12 | 重启恢复       | `pm2 restart zyt-keeper`                                                | 自动拉起，账本重建一致，无重复事件                               |
@@ -531,7 +537,7 @@ pm2 set pm2-logrotate:retain 30
 - R1 底池突变（>10%）/ R2 大额卖出（>5%）/ R3 滑点跳变 / R4 索引延迟（>120 块）/ R5 失败率（>30%，10min 窗口）
 - 告警 webhook 上线前实测一次（发测试告警确认可达）
 
-**关键指标阈值**: 磁盘 >80% / 内存 <500M / 索引器落后 >120 块 / API 响应 >3s / **每日 08:00-08:10 快照必须完成**（未完成 = P0）。
+**关键指标阈值**: 磁盘 >80% / 内存 <500M / 索引器落后 >120 块 / API 响应 >3s / **每日 08:01-08:11 快照必须完成**（未完成 = P0）。
 
 ---
 

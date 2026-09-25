@@ -1,4 +1,5 @@
-// 自动生成：contracts/ZYTConfig.sol/ZYTConfig.json
+// 自动生成：contracts/ZYTConfig.sol
+// 由 scripts/gen-abis.mjs 生成，请勿手工编辑
 export const CONFIG_ABI = [
  {
   "inputs": [],
@@ -76,25 +77,6 @@ export const CONFIG_ABI = [
    },
    {
     "indexed": false,
-    "internalType": "bool",
-    "name": "value",
-    "type": "bool"
-   }
-  ],
-  "name": "ParamBoolSet",
-  "type": "event"
- },
- {
-  "anonymous": false,
-  "inputs": [
-   {
-    "indexed": true,
-    "internalType": "string",
-    "name": "key",
-    "type": "string"
-   },
-   {
-    "indexed": false,
     "internalType": "uint256",
     "name": "value",
     "type": "uint256"
@@ -157,12 +139,25 @@ export const CONFIG_ABI = [
  },
  {
   "inputs": [],
-  "name": "buyWhitelistEnabled",
+  "name": "buyQuotaRate",
   "outputs": [
    {
-    "internalType": "bool",
+    "internalType": "uint256",
     "name": "",
-    "type": "bool"
+    "type": "uint256"
+   }
+  ],
+  "stateMutability": "view",
+  "type": "function"
+ },
+ {
+  "inputs": [],
+  "name": "creator",
+  "outputs": [
+   {
+    "internalType": "address",
+    "name": "",
+    "type": "address"
    }
   ],
   "stateMutability": "view",
@@ -209,6 +204,19 @@ export const CONFIG_ABI = [
  },
  {
   "inputs": [],
+  "name": "deflationLpRate",
+  "outputs": [
+   {
+    "internalType": "uint256",
+    "name": "",
+    "type": "uint256"
+   }
+  ],
+  "stateMutability": "view",
+  "type": "function"
+ },
+ {
+  "inputs": [],
   "name": "deflationRate",
   "outputs": [
    {
@@ -235,6 +243,19 @@ export const CONFIG_ABI = [
  },
  {
   "inputs": [],
+  "name": "factory",
+  "outputs": [
+   {
+    "internalType": "address",
+    "name": "",
+    "type": "address"
+   }
+  ],
+  "stateMutability": "view",
+  "type": "function"
+ },
+ {
+  "inputs": [],
   "name": "forceSell",
   "outputs": [
    {
@@ -248,25 +269,12 @@ export const CONFIG_ABI = [
  },
  {
   "inputs": [],
-  "name": "gst",
+  "name": "keeperAddress",
   "outputs": [
    {
     "internalType": "address",
     "name": "",
     "type": "address"
-   }
-  ],
-  "stateMutability": "view",
-  "type": "function"
- },
- {
-  "inputs": [],
-  "name": "gstMaxSupply",
-  "outputs": [
-   {
-    "internalType": "uint256",
-    "name": "",
-    "type": "uint256"
    }
   ],
   "stateMutability": "view",
@@ -340,6 +348,19 @@ export const CONFIG_ABI = [
  {
   "inputs": [],
   "name": "owner",
+  "outputs": [
+   {
+    "internalType": "address",
+    "name": "",
+    "type": "address"
+   }
+  ],
+  "stateMutability": "view",
+  "type": "function"
+ },
+ {
+  "inputs": [],
+  "name": "pair",
   "outputs": [
    {
     "internalType": "address",
@@ -540,19 +561,6 @@ export const CONFIG_ABI = [
   "type": "function"
  },
  {
-  "inputs": [],
-  "name": "router",
-  "outputs": [
-   {
-    "internalType": "address",
-    "name": "",
-    "type": "address"
-   }
-  ],
-  "stateMutability": "view",
-  "type": "function"
- },
- {
   "inputs": [
    {
     "internalType": "string",
@@ -566,19 +574,6 @@ export const CONFIG_ABI = [
    }
   ],
   "name": "setAddress",
-  "outputs": [],
-  "stateMutability": "nonpayable",
-  "type": "function"
- },
- {
-  "inputs": [
-   {
-    "internalType": "bool",
-    "name": "enabled",
-    "type": "bool"
-   }
-  ],
-  "name": "setBuyWhitelistEnabled",
   "outputs": [],
   "stateMutability": "nonpayable",
   "type": "function"
@@ -681,12 +676,38 @@ export const CONFIG_ABI = [
  },
  {
   "inputs": [],
+  "name": "swapFeeBps",
+  "outputs": [
+   {
+    "internalType": "uint256",
+    "name": "",
+    "type": "uint256"
+   }
+  ],
+  "stateMutability": "view",
+  "type": "function"
+ },
+ {
+  "inputs": [],
   "name": "technicalAddress",
   "outputs": [
    {
     "internalType": "address",
     "name": "",
     "type": "address"
+   }
+  ],
+  "stateMutability": "view",
+  "type": "function"
+ },
+ {
+  "inputs": [],
+  "name": "totalSupplyCap",
+  "outputs": [
+   {
+    "internalType": "uint256",
+    "name": "",
+    "type": "uint256"
    }
   ],
   "stateMutability": "view",
@@ -764,4 +785,4 @@ export const CONFIG_ABI = [
   "stateMutability": "view",
   "type": "function"
  }
-] as const;
+];

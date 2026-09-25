@@ -4,10 +4,14 @@ const { ethers } = require("hardhat");
 const readline = require("node:readline");
 
 /**
- * @notice 众赢币 ZYT 部署脚本（按方案 v6 部署流程）
+ * @notice 众赢币 ZYT 部署脚本（v9，2026-09-24）
  *
- * 流程：ZYTConfig → GSTToken → ZYTToken → ZYTForceSell → ZYTPoolManager
- *       → ZYTReferral → ZYTMining → ZYTDeflation → 接线 → 底池初始化
+ * v9 范式：弃 GST，USDT↔ZYT 单币直换，真实 PancakeSwap V2 pair 为唯一底池。
+ *
+ * 流程：USDT → ZYTConfig → ZYTToken → ZYTLiquidityCreator → ZYTPoolManager
+ *       → ZYTReferral → ZYTForceSell → ZYTMining(+ZYTCompute lib) → ZYTDeflation
+ *       → 接线 → createInitialPool（2.1 万 USDT + 21 亿 ZYT 组池，LP 锁仓）
+ *       → setPair ×3 → pair 白名单
  *
  * 用法：
  *   npx hardhat run scripts/deploy.js                 # 本地 hardhat（Mock USDT）
@@ -18,11 +22,14 @@ const readline = require("node:readline");
  *   - 部署/owner 私钥 = .env PRIVATE_KEY，仅存本地/部署机，严禁上传服务器、严禁提交 Git
  *   - keeper 签名私钥 = 服务器 .env KEEPER_PRIVATE_KEY（权限 600，仅触发快照无资金权限）
  *   - 主网部署需交互输入 yes 确认（脚本化场景设 CONFIRM_MAINNET=1）
+ *
+ * 主网前置（部署清单）：
+ *   - deployer 持有 ≥ 2.1 万 USDT（初始底池）+ BNB（gas）
+ *   - MARKET_ADDRESS / TECHNICAL_ADDRESS / KEEPER_ADDRESS 填 Safe 多签或 EOA
  */
 
-const GST_MAX = 333_000_000n * 10n ** 18n;      // 3.33 亿
-const GST_POOL = 21_000n * 10n ** 18n;          // 底池 2.1 万枚
-const ZYT_MAX = 2_100_000_000n * 10n ** 18n;    // 21 亿
+const ZYT_MAX = 2_100_000_000n * 10n ** 18n;    // 21 亿（全量一次铸出）
+const SEED_USDT = 21_000n * 10n ** 18n;         // 初始底池 2.1 万 USDT
 const BLACK_HOLE = "0x000000000000000000000000000000000000dEaD";
 
 /** 主网部署确认（防误操作）：打印网络与 deployer，要求输入 yes；CONFIRM_MAINNET=1 跳过 */
@@ -44,9 +51,8 @@ async function confirmMainnet(deployerAddress) {
 }
 
 /**
- * @notice 等待链上授权到位（BSC testnet 公共 RPC 多节点最终一致性：
+ * @notice 等待链上授权到位（BSC 公共 RPC 多节点最终一致性：
  *         approve 交易确认后，estimateGas 可能打到未同步节点读到 allowance=0 → revert）。
- *         轮询读取直到 allowance >= min，再继续后续依赖该授权的调用。
  */
 async function waitAllowance(token, owner, spender, min, label, retries = 15) {
   for (let i = 0; i < retries; i++) {
@@ -69,21 +75,19 @@ async function main() {
 
   const network = hre.network.name;
   const isLocal = network === "hardhat" || network === "localhost";
+  const isBscMainnet = network === "bsc";
 
   // 统一 factory 入口：显式绑定 deployer signer（各网络行为一致）
   const factory = (name, opts = {}) =>
     ethers.getContractFactory(name, { signer: deployer, ...opts });
 
   // ---------- 1. USDT ----------
-  // USDT_MOCK=1：testnet 用 MockERC20（可 faucet），主网用真实 USDT（默认）
   const useMockUsdt = isLocal || process.env.USDT_MOCK === "1";
-  // v15：主网 TestUSDT 试运行模式醒目警告（手册附录 E：试运行后必须重部署正式版）
   if (useMockUsdt && !isLocal) {
     console.log("\n⚠️  ===============================================");
     console.log("⚠️  主网 TestUSDT 试运行模式（USDT_MOCK=1）");
     console.log("⚠️  本部署使用 TestUSDT（MockERC20），非真实 USDT");
     console.log("⚠️  仅用于主网试运行；正式运营必须重部署正式版（真实 USDT）");
-    console.log("⚠️  同合约切换 usdt 地址已否决（假币换真币口子），见手册附录 E");
     console.log("⚠️  ===============================================\n");
   }
   let usdt;
@@ -91,11 +95,10 @@ async function main() {
     const Mock = await factory("MockERC20");
     usdt = await Mock.deploy("Mock USDT", "USDT", 18);
     await usdt.waitForDeployment();
-    // 测试网水龙头：给部署者 5 万 USDT（覆盖 initialize 2.1 万 + 测试入金）
+    // 测试水龙头：给部署者 5 万 USDT（覆盖初始底池 2.1 万 + 测试入金）
     await (await usdt.faucet(50_000n * 10n ** 18n)).wait();
     console.log("MockUSDT:", await usdt.getAddress());
   } else {
-    // 真实 USDT：包装为合约对象（allowance/approve 统一接口），绑定 deployer 签名
     usdt = await ethers.getContractAt(
       "MockERC20",
       process.env.USDT_MAINNET || "0x55d398326f99059fF775485246999027B3197955",
@@ -105,65 +108,71 @@ async function main() {
   const usdtAddr = await usdt.getAddress();
 
   // ---------- 2. ZYTConfig ----------
-  const Config = await factory("ZYTConfig");
-  const config = await Config.deploy();
+  const config = await (await factory("ZYTConfig")).deploy();
   await config.waitForDeployment();
   const configAddr = await config.getAddress();
   console.log("ZYTConfig:", configAddr);
 
-  // ---------- 3. GSTToken ----------
-  const GST = await factory("GSTToken");
-  const gst = await GST.deploy(BLACK_HOLE);
-  await gst.waitForDeployment();
-  const gstAddr = await gst.getAddress();
-  console.log("GSTToken:", gstAddr);
-
-  // ---------- 4. ZYTToken ----------
-  const ZYT = await factory("ZYTToken");
-  const zyt = await ZYT.deploy(BLACK_HOLE);
+  // ---------- 3. ZYTToken ----------
+  const zyt = await (await factory("ZYTToken")).deploy(BLACK_HOLE);
   await zyt.waitForDeployment();
   const zytAddr = await zyt.getAddress();
   console.log("ZYTToken:", zytAddr);
 
-  // ---------- 5. ZYTForceSell ----------
-  const ForceSell = await factory("ZYTForceSell");
-  const forceSell = await ForceSell.deploy(zytAddr);
-  await forceSell.waitForDeployment();
-  const forceSellAddr = await forceSell.getAddress();
-  console.log("ZYTForceSell:", forceSellAddr);
+  // ---------- 4. ZYTLiquidityCreator（初始建池 + LP 锁仓） ----------
+  // factory 按 network 分流（PancakeSwap V2），env 可覆盖；本地 hardhat 部署 MiniFactory
+  let factoryAddr;
+  if (isLocal) {
+    const mini = await (await factory("MiniFactory")).deploy();
+    await mini.waitForDeployment();
+    factoryAddr = await mini.getAddress();
+    console.log("MiniFactory(local):", factoryAddr);
+  } else {
+    factoryAddr = isBscMainnet
+      ? (process.env.FACTORY_MAINNET || "0xcA143Ce32Fe78f1f7019d7d551a6402fC5350c73")
+      : (process.env.FACTORY_TESTNET || "0xB7926C0430Afb07AA7DEfDE6DA862aE0Bde767bc");
+    console.log("PancakeFactory:", factoryAddr);
+  }
+  const creator = await (await factory("ZYTLiquidityCreator")).deploy(
+    zytAddr, usdtAddr, factoryAddr, BLACK_HOLE
+  );
+  await creator.waitForDeployment();
+  const creatorAddr = await creator.getAddress();
+  console.log("ZYTLiquidityCreator:", creatorAddr);
 
-  // ---------- 6. ZYTPoolManager ----------
-  const Pool = await factory("ZYTPoolManager");
-  const pool = await Pool.deploy(configAddr, zytAddr, usdtAddr, gstAddr);
+  // ---------- 5. ZYTPoolManager ----------
+  const pool = await (await factory("ZYTPoolManager")).deploy(configAddr, zytAddr, usdtAddr);
   await pool.waitForDeployment();
   const poolAddr = await pool.getAddress();
   console.log("ZYTPoolManager:", poolAddr);
 
-  // ---------- 7. ZYTReferral ----------
-  const Referral = await factory("ZYTReferral");
-  const referral = await Referral.deploy();
+  // ---------- 6. ZYTReferral ----------
+  const referral = await (await factory("ZYTReferral")).deploy();
   await referral.waitForDeployment();
   const referralAddr = await referral.getAddress();
   console.log("ZYTReferral:", referralAddr);
 
-  // ---------- 8. ZYTMining ----------
-  const Compute = await factory("ZYTCompute");
-  const compute = await Compute.deploy();
+  // ---------- 7. ZYTForceSell ----------
+  const forceSell = await (await factory("ZYTForceSell")).deploy(zytAddr);
+  await forceSell.waitForDeployment();
+  const forceSellAddr = await forceSell.getAddress();
+  console.log("ZYTForceSell:", forceSellAddr);
+
+  // ---------- 8. ZYTMining（含 ZYTCompute 库） ----------
+  const compute = await (await factory("ZYTCompute")).deploy();
   await compute.waitForDeployment();
   const computeAddr = await compute.getAddress();
   console.log("ZYTCompute(lib):", computeAddr);
 
-  const Mining = await factory("ZYTMining", {
+  const mining = await (await factory("ZYTMining", {
     libraries: { ZYTCompute: computeAddr },
-  });
-  const mining = await Mining.deploy(configAddr, poolAddr, referralAddr, zytAddr, usdtAddr);
+  })).deploy(configAddr, poolAddr, referralAddr, zytAddr, usdtAddr);
   await mining.waitForDeployment();
   const miningAddr = await mining.getAddress();
   console.log("ZYTMining:", miningAddr);
 
   // ---------- 9. ZYTDeflation ----------
-  const Deflation = await factory("ZYTDeflation");
-  const deflation = await Deflation.deploy(configAddr, poolAddr, miningAddr);
+  const deflation = await (await factory("ZYTDeflation")).deploy(configAddr, poolAddr, miningAddr);
   await deflation.waitForDeployment();
   const deflationAddr = await deflation.getAddress();
   console.log("ZYTDeflation:", deflationAddr);
@@ -171,109 +180,98 @@ async function main() {
   // ---------- 10. 接线 ----------
   const market = process.env.MARKET_ADDRESS || deployer.address;
   const technical = process.env.TECHNICAL_ADDRESS || deployer.address;
-  // v16：router 按 network 分流（主网 PancakeSwap V2 / testnet PancakeSwap V2），env 可覆盖
-  // 防呆：.env 曾把 testnet router 填进 ROUTER_MAINNET 导致跨网误接
-  const isBscMainnet = hre.network.name === "bsc";
-  const router = isBscMainnet
-    ? (process.env.ROUTER_MAINNET || "0x10ED43C718714eb63d5aA57B78B54704E256024E")
-    : (process.env.ROUTER_TESTNET || "0x9Ac64Cc6e4415144C455BD8E4837Fea55603e5c3");
 
   await config.setAddress("marketAddress", market);
   await config.setAddress("technicalAddress", technical);
   await config.setAddress("blackHole", BLACK_HOLE);
-  await config.setAddress("router", router);
   await config.setAddress("usdt", usdtAddr);
-  await config.setAddress("gst", gstAddr);
+  await config.setAddress("factory", factoryAddr);
   await config.setAddress("zyt", zytAddr);
   await config.setAddress("pool", poolAddr);
   await config.setAddress("mining", miningAddr);
   await config.setAddress("deflation", deflationAddr);
   await config.setAddress("forceSell", forceSellAddr);
   await config.setAddress("referral", referralAddr);
-  // P2-3 修复：接入 Keeper 触发地址（快照/通缩；生产用 KEEPER_ADDRESS 环境变量，默认 deployer=owner 兜底）
-  // 漏设会导致 owner 转多签后 dailySnapshot 无人可触发（仅多签 owner 可调，链路断裂）
+  await config.setAddress("creator", creatorAddr);
   await config.setAddress("keeperAddress", process.env.KEEPER_ADDRESS || deployer.address);
   console.log("Config wired.");
 
-  await zyt.setMinter(miningAddr);
+  // ZYTToken：minter=Creator（建池铸 21 亿一次）；ledger=Mining（P1-7 双向记账）
+  await zyt.setMinter(creatorAddr);
+  await zyt.setLedger(miningAddr);
   await zyt.setPool(poolAddr);
   await zyt.setForceSell(forceSellAddr);
-  // P0-1 修复：接入 ZYTConfig（V6 转账滑点率 + V7 totalSupplyCap 保险丝）
-  // 漏设会导致 configAddr=0 → 转账 10% 税跳过、mint 增发上限失效（生产安全机制静默关闭）
+  await zyt.setCreator(creatorAddr);
   await zyt.setConfig(configAddr);
+  // 系统豁免（跳过转账税/强卖 hook/记账）：白名单双方
+  await zyt.setWhiteList(creatorAddr, true);
   await zyt.setWhiteList(poolAddr, true);
   await zyt.setWhiteList(miningAddr, true);
   await zyt.setWhiteList(deflationAddr, true);
-  // P2-2 白名单保护：营销/技术地址豁免强制卖出初始化（收到的营销/技术 ZYT 不受 60 天强制卖出约束）
+  // 营销/技术地址豁免强制卖出（收到的滑点分成 ZYT 不受 4 期强卖约束）
   await zyt.setWhiteList(market, true);
   await zyt.setWhiteList(technical, true);
   console.log("ZYTToken wired.");
 
+  // Pool：locker=Creator（锁仓 + 通缩报销唯一入口）
+  await pool.setLocker(creatorAddr);
   await pool.setMining(miningAddr);
   await pool.setDeflation(deflationAddr);
   await referral.setMining(miningAddr);
+  await creator.setPoolManager(poolAddr);
   await mining.setDeflation(deflationAddr);
+  await forceSell.setKeeper(process.env.KEEPER_ADDRESS || deployer.address);
   console.log("Deps wired.");
 
-  // ---------- 11. 底池初始化 ----------
-  // 部署者授权 GST + USDT 给池合约（V5：initialize 真实转入 2.1 万 USDT 消除账面缺口）
-  await gst.approve(poolAddr, GST_POOL);
+  // ---------- 11. 初始建池（2.1 万 USDT + 21 亿 ZYT，LP 锁仓） ----------
   if (useMockUsdt) {
-    // mock：直接 approve（deployer 已 faucet 5 万）
-    await usdt.approve(poolAddr, GST_POOL);
+    await usdt.approve(creatorAddr, SEED_USDT);
   } else {
-    // 真实 USDT：deployer 需先持有 2.1 万并 approve（主网部署清单必做）
-    const allowance = await usdt.allowance(deployer.address, poolAddr);
-    if (allowance < GST_POOL) {
+    const bal = await usdt.balanceOf(deployer.address);
+    if (bal < SEED_USDT) {
       throw new Error(
-        "USDT allowance < 21000. 主网部署需先持有 2.1 万 USDT 并 approve 给 pool（见部署清单）"
+        `USDT 余额不足：${ethers.formatUnits(bal, 18)} < 21000。主网部署需先持有 2.1 万 USDT（见部署清单）`
       );
     }
+    const allowance = await usdt.allowance(deployer.address, creatorAddr);
+    if (allowance < SEED_USDT) {
+      await (await usdt.approve(creatorAddr, SEED_USDT)).wait();
+    }
   }
-  // 等待授权同步（公共 RPC 最终一致性，防 initialize 模拟执行读到 allowance=0 而 revert）
-  await waitAllowance(gst, deployer.address, poolAddr, GST_POOL, "GST");
-  if (useMockUsdt) await waitAllowance(usdt, deployer.address, poolAddr, GST_POOL, "USDT");
-  await pool.initialize(GST_POOL, ZYT_MAX);
-  console.log("Pool initialized: GST=%s ZYT=%s", GST_POOL.toString(), ZYT_MAX.toString());
+  await waitAllowance(usdt, deployer.address, creatorAddr, SEED_USDT, "USDT→Creator");
+  await (await creator.createInitialPool(ZYT_MAX, SEED_USDT)).wait();
+  const pairAddr = await creator.pair();
+  console.log("Initial pool created:", pairAddr);
+  console.log("  ZYT seeded:", ethers.formatUnits(ZYT_MAX, 18), "USDT seeded:", ethers.formatUnits(SEED_USDT, 18));
 
-  // 其余 GST 永久锁定（转黑洞）
-  await gst.lockRemaining();
-  console.log("GST remaining supply locked to blackhole.");
+  // ---------- 12. pair 接线（三处：config / zyt / pool）+ 白名单 ----------
+  await config.setAddress("pair", pairAddr);
+  await zyt.setPair(pairAddr);
+  await pool.setPair(pairAddr);
+  await zyt.setWhiteList(pairAddr, true);
+  console.log("Pair wired (config + token gate + pool).");
 
-  // ---------- 12. 启动阶段门控（P0-2 决策：推荐 A） ----------
-  // 初始 poolUSDT=2.1万 < 默认门槛 1000万 → 若保持默认会永远 stage1（deposit/addLiquidity 全拒，系统锁死）。
-  // 决策 A：跳过「<1000万只卖不买」阶段，初始直接 stage2（LP 额度 1:1）启动；
-  // poolStage2USDT 保持 2000 万 → poolUSDT 达标后自动进 stage3（白名单内自由买卖）。
-  await config.setUint("poolStage1USDT", 0);
-
-  // ---------- 13. 首批买入白名单（P2-4：v7 买入白名单全程启用，需运营放行用户） ----------
-  // 用法：WHITELIST="0xaddr1,0xaddr2" npx hardhat run scripts/deploy.js --network bscTestnet
-  // 默认空：运营后续通过多签 setBuyWhitelist/setBuyWhitelistBatch 添加（多签转移前由 deployer 执行）
-  const whitelist = (process.env.WHITELIST || "")
-    .split(",")
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0);
-  if (whitelist.length > 0) {
-    await pool.setBuyWhitelistBatch(whitelist, true);
-    console.log(`Buy whitelist added: ${whitelist.length} addrs`);
-  }
-
-  // ---------- 14. 摘要 ----------
-  console.log("\n===== DEPLOYMENT SUMMARY =====");
-  console.log("ZYTConfig     :", configAddr);
-  console.log("GSTToken      :", gstAddr);
-  console.log("ZYTToken      :", zytAddr);
-  console.log("ZYTForceSell  :", forceSellAddr);
-  console.log("ZYTPoolManager:", poolAddr);
-  console.log("ZYTReferral   :", referralAddr);
-  console.log("ZYTMining     :", miningAddr);
-  console.log("ZYTDeflation  :", deflationAddr);
-  console.log("USDT          :", usdtAddr, useMockUsdt && !isLocal ? "（⚠️ TestUSDT 试运行版——正式版需重部署，见附录 E）" : "");
-  console.log("Router        :", router);
-  console.log("Market        :", market);
-  console.log("Technical     :", technical);
-  console.log("\n⚠️ 生产环境：请将 config.owner 转移至 Gnosis Safe 多签");
-  console.log("⚠️ 生产环境：GST/USDT 池与 ZYT 底池的 DEX 流动性操作需人工确认");
+  // ---------- 13. 摘要 ----------
+  const locked = await creator.lockedLiquidity();
+  console.log("\n===== DEPLOYMENT SUMMARY (v9) =====");
+  console.log("ZYTConfig          :", configAddr);
+  console.log("ZYTToken           :", zytAddr);
+  console.log("ZYTLiquidityCreator:", creatorAddr, "（LP 锁仓:", locked.toString(), "）");
+  console.log("ZYTPoolManager     :", poolAddr);
+  console.log("ZYTReferral        :", referralAddr);
+  console.log("ZYTForceSell       :", forceSellAddr);
+  console.log("ZYTMining          :", miningAddr);
+  console.log("ZYTDeflation       :", deflationAddr);
+  console.log("ZYTCompute(lib)    :", computeAddr);
+  console.log("USDT               :", usdtAddr, useMockUsdt && !isLocal ? "（⚠️ TestUSDT 试运行版——正式版需重部署）" : "");
+  console.log("PancakeFactory     :", factoryAddr);
+  console.log("Pair (ZYT/USDT)    :", pairAddr);
+  console.log("Market             :", market);
+  console.log("Technical          :", technical);
+  console.log("Keeper             :", process.env.KEEPER_ADDRESS || deployer.address);
+  console.log("\n⚠️ 生产环境：请将各合约 owner 转移至 Gnosis Safe 多签（营销/技术 Safe 见《上线钱包准备清单_方案A》）");
+  console.log("⚠️ keeper 侧：更新 .env 合约地址与 INDEXER_START_BLOCK，每日 08:01 cron 触发 dailySnapshot");
+  console.log("⚠️ 前端侧：SwapPanel 接 mining.buy / mining.sellZyt（approve 对象 pool），仪表盘读真池 view");
 }
 
 main().catch((error) => {

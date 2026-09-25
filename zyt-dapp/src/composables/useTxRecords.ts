@@ -9,8 +9,10 @@ import { ref } from "vue";
 
 export type TxType =
   | "approve" // USDT/ZYT 授权
-  | "addLiquidity" // 添加流动性（LP 1:1 配额）
-  | "deposit" // 入金/质押
+  | "addLiquidity" // 添加流动性（历史记录，v17 起前端不再调用）
+  | "deposit" // 入金（获得算力，阶段 1 不发放 ZYT）
+  | "convert" // 算力兑换 ZYT（v8 历史）
+  | "buy" // v9 真池买入
   | "sell" // 卖出 ZYT
   | "reward" // 日产出领取
   | "dividend" // 分红领取

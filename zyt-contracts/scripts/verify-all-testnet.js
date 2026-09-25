@@ -1,9 +1,10 @@
 /* global ethers hre */
 /**
- * @title bscscan 批量源码验证（testnet 第五套部署）
- * @notice 按依赖顺序验证 9 合约 + ZYTCompute 库；需 .env 配置 BSCSCAN_API_KEY
+ * @title bscscan 批量源码验证（testnet 第九套 v9 部署，2026-09-24）
+ * @notice 按依赖顺序验证 9 合约（8 业务合约 + ZYTCompute 库）；需 .env 配置 BSCSCAN_API_KEY
  * @usage  npx hardhat run scripts/verify-all-testnet.js --network bscTestnet
  * @note   验证顺序要求：库 → 无依赖合约 → 有依赖合约（bscscan 需先有依赖源码）
+ * @note   v9：无 GST；新增 ZYTLiquidityCreator；PoolManager 构造参数 4→3
  */
 require("dotenv").config();
 
@@ -18,33 +19,39 @@ if (PROXY && PROXY !== "off") {
 }
 
 const BLACK_HOLE = "0x000000000000000000000000000000000000dEaD";
+// PancakeSwap V2 testnet Factory（deploy.js 同款默认；Creator 构造参数引用）
+const FACTORY_TESTNET = "0xB7926C0430Afb07AA7DEfDE6DA862aE0Bde767bc";
 
-// 第五套部署地址（2026-09-01）
+// 第九套 v9 部署地址（2026-09-24，USDT_MOCK=1 试运行口径）
 const ADDR = {
-  config: "0x55F4e5F732ACfa49015AB6546a2766Db7534cDbd",
-  gst: "0xD63C5528008A6c9C521Fe2BEA9349bE4687b5ed3",
-  zyt: "0xdF18105bB57165c59AD651Eda1B4d896412d4166",
-  forceSell: "0x24685AF81fc8443ED46b11Cb17Ba7af0ae55ce06",
-  pool: "0x020927BC660f7631709d388C992979359196DcfD",
-  referral: "0x3C999B3E1292d33B1aB22071691674A38Da84e0E",
-  compute: "0x70c2ae9fb101721e45fd5e6133a2e35cec836391",
-  mining: "0x1ffCec692Ef2c8287C1dE7248B0621bdAd135703",
-  deflation: "0x16E8A145D015D80892e5CFe8cE305F0717F229a9",
-  usdt: "0x7749da5d64c0ABA2A8203c0C630d31e7D13cFb29",
+  config: "0x27DC45A43155b456004BeB8ae589700137eEaf66",
+  zyt: "0x18F532982192ED4b935f9c61F57f58d47E06b749",
+  creator: "0xb63CECaF95B684F0b376B09a186303f4B38E9371",
+  pool: "0x697730106294b1cbc0CB360bF539927A2c01F2f1",
+  referral: "0xf6560a0f9b5d3E9d48c03f08Ca77F2763C996d97",
+  forceSell: "0xA5eA6d2342B1A1B5Ea6723178F1e95ca009e056f",
+  compute: "0x7D9cF4911DD3D0609D85B5a86059d608f8c8A837",
+  mining: "0x29118AC2195338342d93241CBd8Bb2A8034D821e",
+  deflation: "0xeC6aE4f4C3ec25d6837df8501cC7A8Aec850C291",
+  usdt: "0x741e1A81E6fc2878B52694b742BA2869a736dE47",
 };
 
-// 按依赖顺序排列的验证清单（构造参数来自 deploy.js）
+// 按依赖顺序排列的验证清单（构造参数来自 deploy.js v9）
 const TASKS = [
   // 1. 库（必须先验证，供 ZYTMining 引用）
   { name: "ZYTCompute", addr: ADDR.compute, args: [] },
   // 2. 无依赖
   { name: "ZYTConfig", addr: ADDR.config, args: [] },
-  { name: "GSTToken", addr: ADDR.gst, args: [BLACK_HOLE] },
   { name: "ZYTToken", addr: ADDR.zyt, args: [BLACK_HOLE] },
   { name: "ZYTReferral", addr: ADDR.referral, args: [] },
   // 3. 单依赖
   { name: "ZYTForceSell", addr: ADDR.forceSell, args: [ADDR.zyt] },
-  { name: "ZYTPoolManager", addr: ADDR.pool, args: [ADDR.config, ADDR.zyt, ADDR.usdt, ADDR.gst] },
+  {
+    name: "ZYTLiquidityCreator",
+    addr: ADDR.creator,
+    args: [ADDR.zyt, ADDR.usdt, FACTORY_TESTNET, BLACK_HOLE],
+  },
+  { name: "ZYTPoolManager", addr: ADDR.pool, args: [ADDR.config, ADDR.zyt, ADDR.usdt] },
   // 4. 多依赖 + 库链接（ZYTCompute 定义在独立文件 contracts/ZYTCompute.sol，全限定名必须带正确文件路径）
   {
     name: "ZYTMining",

@@ -1,0 +1,38 @@
+{
+  "version": "v9",
+  "date": "2026-09-24",
+  "network": "bscTestnet",
+  "chainId": 97,
+  "usdtMock": true,
+  "deployer": "0xB7233A003C37Beb100C4eFCF82793D24B90179F9",
+  "startBlock": 132856077,
+  "pancakeFactory": "0xB7926C0430Afb07AA7DEfDE6DA862aE0Bde767bc",
+  "contracts": {
+    "MockUSDT": "0x741e1A81E6fc2878B52694b742BA2869a736dE47",
+    "ZYTConfig": "0x27DC45A43155b456004BeB8ae589700137eEaf66",
+    "ZYTToken": "0x18F532982192ED4b935f9c61F57f58d47E06b749",
+    "ZYTLiquidityCreator": "0xb63CECaF95B684F0b376B09a186303f4B38E9371",
+    "ZYTPoolManager": "0x697730106294b1cbc0CB360bF539927A2c01F2f1",
+    "ZYTReferral": "0xf6560a0f9b5d3E9d48c03f08Ca77F2763C996d97",
+    "ZYTForceSell": "0xA5eA6d2342B1A1B5Ea6723178F1e95ca009e056f",
+    "ZYTMining": "0x29118AC2195338342d93241CBd8Bb2A8034D821e",
+    "ZYTDeflation": "0xeC6aE4f4C3ec25d6837df8501cC7A8Aec850C291",
+    "ZYTCompute": "0x7D9cF4911DD3D0609D85B5a86059d608f8c8A837",
+    "Pair(ZYT/USDT)": "0x848196E6cfAC2F93abb4b61887cc58C567d74140"
+  },
+  "acceptance": {
+    "totalSupply": "2100000000",
+    "poolUSDT": "21000",
+    "poolZYT": "2100000000",
+    "price": "0.00001",
+    "lockedLiquidity": "6640783086353596597196676",
+    "stage": 1,
+    "slippageBps": 500
+  },
+  "notes": [
+    "v9 单币直换（弃 GST），真 Pancake V2 池，LP 锁仓于 Creator（skimDeflation 每日 2% 递减）",
+    "第一轮部署因 Factory 地址记错废弃（0xB7926C0430AFb07AA7DEfDE6DA862aE0Bde3678b 无代码），勿引用",
+    "keeper .env 与前端 config 已同步本套地址",
+    "bscscan verify 待代理恢复后执行 npm run verify:testnet"
+  ]
+}

@@ -6,7 +6,10 @@
   "scripts": {
     "compile": "hardhat compile",
     "test": "hardhat test",
-    "deploy:testnet": "hardhat run scripts/deploy.js --network bscTestnet"
+    "deploy:testnet": "hardhat run scripts/deploy.js --network bscTestnet",
+    "deploy:mainnet": "hardhat run scripts/deploy.js --network bsc",
+    "verify:testnet": "hardhat run scripts/verify-all-testnet.js --network bscTestnet",
+    "verify:mainnet": "hardhat run scripts/verify-all-mainnet.js --network bsc"
   },
   "devDependencies": {
     "@nomicfoundation/hardhat-chai-matchers": "^2.0.8",

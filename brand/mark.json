@@ -1,0 +1,15 @@
+{
+  "brand":   { "name_zh": "众赢币", "name_en": "ZYT" },
+  "palette": { "primary": "#F5C15D", "structural": "#4A3608",
+               "accent": "#FFF6D8",  "panel": "#F3F0E8" },
+  "canvas":  100,
+  "min_size_px": 24,
+  "motif": [
+    {"type":"circle", "cx":50,"cy":50,"r":40,"fill":"none","stroke":"primary","width":6},
+    {"type":"circle", "cx":50,"cy":50,"r":45,"fill":"none","stroke":"structural","width":2.5},
+    {"type":"polygon", "points": [[38.9,48.0],[50,19.9],[61.1,48.0],[66.9,44.0],[50,32.1],[33.1,44.0]], "fill":"structural"},
+    {"type":"polygon", "points": [[29.0,72.9],[38,49.8],[47.0,72.9],[51.0,67.1],[38,58.2],[25.0,67.1]], "fill":"structural"},
+    {"type":"polygon", "points": [[53.0,72.9],[62,49.8],[75.0,72.9],[71.0,67.1],[62,58.2],[49.0,67.1]], "fill":"structural"},
+    {"type":"circle", "cx":50,"cy":50,"r":3.5,"fill":"accent"}
+  ]
+}

@@ -27,8 +27,8 @@
         <div class="label">{{ $t("home.networkPower") }}</div>
       </div>
       <div class="col">
-        <div class="num">{{ user ? fmtNum(user.lpQuota, 0) : "--" }}</div>
-        <div class="label">{{ $t("home.myLp") }}</div>
+        <div class="num red">{{ lpBurned }}</div>
+        <div class="label">{{ $t("home.lpBurned") }}</div>
       </div>
     </div>
   </div>
@@ -46,21 +46,32 @@ const props = defineProps<{
 }>();
 
 // v14：真值接入（keeper /stats 扩展）；链上直连降级分支无此数据 → 保持 "--" 不冒充 0
-function weiToHuman(wei?: string): string {
-  if (!wei || wei === "0" || wei === "0x") return "";
-  return formatEther(BigInt(wei));
+// 2026-09-25 修复：原实现对 "0" 也判空（显示 --），导致「总销毁数 / 今日入单」在有真实 0 值时误显示无数据。
+//   现按「无数据（undefined/null/空串）→ --；有值（含 0）→ 正常格式化」处理。
+function humanOf(wei?: string): string | null {
+  if (wei === undefined || wei === null || wei === "") return null;
+  try {
+    return formatEther(BigInt(wei));
+  } catch {
+    return null;
+  }
 }
 const burned = computed(() => {
-  const h = weiToHuman(props.pool.burned);
-  return h ? fmtCompact(h) : "--";
+  const h = humanOf(props.pool.burned);
+  return h === null ? "--" : fmtCompact(h);
 });
 const today = computed(() => {
-  const h = weiToHuman(props.pool.todayDeposit);
-  return h ? fmtNum(h, 2) : "--";
+  const h = humanOf(props.pool.todayDeposit);
+  return h === null ? "--" : fmtNum(h, 2);
 });
 const networkPower = computed(() => {
-  const h = weiToHuman(props.pool.networkPower);
-  return h ? fmtCompact(h) : "--";
+  const h = humanOf(props.pool.networkPower);
+  return h === null ? "--" : fmtCompact(h);
+});
+// v9：累计销毁 LP 凭证（入金 60% 组 LP 后销毁；两个分支均已在 usePoolData 转 human）
+const lpBurned = computed(() => {
+  const h = props.pool.totalLpBurned;
+  return h === undefined || h === null || h === "" ? "--" : fmtCompact(h);
 });
 
 function fmtCompact(n: string, d = 2): string {

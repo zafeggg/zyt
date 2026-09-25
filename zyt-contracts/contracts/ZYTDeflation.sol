@@ -8,10 +8,12 @@ import "./ZYTMining.sol";
 
 /**
  * @title ZYTDeflation
- * @notice 每日快照（北京时间 08:00，与 Ave 同步，由 Keeper 触发）：
- *         - 更新滑点基准（底池 GST 数量快照）
- *         - 每日底池通缩 2%（1% 销毁 + 1% 算力加权分红），通缩至 500 万枚停止
- *         - 记录当日产出释放（全网算力由 Keeper 统计传入）
+ * @notice 每日快照（北京时间 08:01，keeper cron `1 0 * * *` UTC 触发）：
+ *         1. 更新快照基准（快照锁定价 + 池 USDT 快照 + 峰值基准刷新）
+ *         2. 每日通缩 2%：锁仓合约报销 2% 初始 LP → 抽出 ZYT_a/U_b；
+ *            ZYT_a 1% 销毁 + 1% 算力加权分红；U_b 转回 pair + sync（池 U 不变，价格单边上行）
+ *         3. 记录当日全网算力（分红分配分母）与当日分红池
+ *         通缩至池剩 500 万枚 ZYT 停止（约 299 天，机制自然终止）。
  */
 contract ZYTDeflation is Ownable {
     ZYTConfig public config;
@@ -21,7 +23,7 @@ contract ZYTDeflation is Ownable {
     uint256 public lastSnapshotDay;
     uint256 public snapshotCount;
 
-    event DailySnapshot(uint256 day, uint256 burned, uint256 dividend, uint256 released, uint256 snapshotGST);
+    event DailySnapshot(uint256 day, uint256 burned, uint256 dividend, uint256 snapshotPrice, uint256 snapshotPoolUSDT);
     event DeflationFloorHit(uint256 day);
 
     constructor(address config_, address pool_, address mining_) Ownable(msg.sender) {
@@ -31,11 +33,10 @@ contract ZYTDeflation is Ownable {
     }
 
     /**
-     * @notice 每日快照（北京时间 08:00 触发；仅 Keeper 地址或 owner 可调用，防任意地址注入恶意 totalPower）
+     * @notice 每日快照（北京时间 08:01 触发；仅 Keeper 地址或 owner 可调用，防注入恶意 totalPower）
      * @param totalPower 全网算力和（Keeper 链下统计后传入，避免链上遍历）
      */
     function dailySnapshot(uint256 totalPower) external {
-        // V4 修复：仅 keeper 或 owner 可触发（防 DoS/产出稀释/抢先快照）
         require(
             msg.sender == config.keeperAddress() || msg.sender == owner(),
             "Deflation: not keeper"
@@ -45,22 +46,22 @@ contract ZYTDeflation is Ownable {
         lastSnapshotDay = day;
         snapshotCount++;
 
-        // 1. 更新滑点基准（底池 GST 数量）
+        // 1. 更新快照基准（快照锁定价 / 池 USDT 快照 / 峰值基准）
         pool.updateSnapshot();
 
-        // 2. 每日通缩 2%（1% 销毁 + 1% 分红），至 500 万枚停止
+        // 2. 每日通缩 2%（真池抽 LP：1% 销毁 + 1% 分红，U 回池 sync），至 500 万枚停止
         uint256 burned = 0;
         uint256 dividend = 0;
         if (pool.poolZYT() > config.deflationFloor()) {
-            (burned, dividend) = pool.dailyBurn();
+            (burned, dividend) = pool.deflate();
         } else {
             emit DeflationFloorHit(day);
         }
 
-        // 3. 每日产出释放记录
+        // 3. 记录全网算力（分红分配分母）与当日分红池
         mining.dailyRelease(day, totalPower);
-        uint256 released = mining.dailyReleaseAmount();
+        mining.recordDailyDividend(day, dividend);
 
-        emit DailySnapshot(day, burned, dividend, released, pool.snapshotPoolGST());
+        emit DailySnapshot(day, burned, dividend, pool.getTradePrice(), pool.snapshotPoolUSDT());
     }
 }

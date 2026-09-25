@@ -10,8 +10,8 @@
       <div class="pool-cards">
         <div class="pool-card">
           <div class="p-label">{{ $t("home.poolGst") }}</div>
-          <div class="p-value">{{ loaded ? fmtNum(poolStats.poolGST, 2) : "--" }}</div>
-          <div class="p-sub">GST</div>
+          <div class="p-value">{{ loaded ? fmtNum(poolStats.poolUSDT, 2) : "--" }}</div>
+          <div class="p-sub">USDT</div>
         </div>
         <div class="pool-card">
           <div class="p-label">{{ $t("home.poolZyt") }}</div>
@@ -30,6 +30,8 @@
           阶段{{ s }}
         </span>
       </div>
+      <!-- v17：底池创建累计（Creator 未接线时不展示，不以 0 冒充） -->
+      <div v-if="creatorLine" class="creator-line">{{ creatorLine }}</div>
     </div>
 
     <!-- 我的资产 -->
@@ -53,33 +55,62 @@
       </div>
     </div>
 
-    <!-- 动态额度 + 强制卖出进度 -->
+    <!-- 每日分红：池内 1% 按当日算力独立结算，累计在合约内由用户自行提取 -->
+    <DividendCard
+      v-if="userStats"
+      :pending="dividendStats ? dividendStats.pending : ''"
+      :settleable="dividendStats?.settleable"
+      :today-accrual="dividendStats?.todayAccrual"
+      @refresh="refresh"
+    />
+
+    <!-- 买入额度 + 强制卖出进度（v9.1：买入消耗买额 1:1，与算力/提取解耦） -->
     <QuotaCard
       v-if="userStats"
-      :quota="userStats.dynamicQuota"
-      :used="userStats.dynamicWithdrawn"
+      :buy-quota-left="userStats.buyQuotaLeft || '0'"
+      :deposit-total="userStats.depositTotal"
+      :stage="poolStats.stage"
       :force-sell="forceSellStats"
       @reinvest="goSwap"
     />
+
+    <!-- v9.1：静态 2 倍 / 动态 5 倍出局进度 -->
+    <ExitProgressCard v-if="userStats" :user="userStats" />
 
     <div class="foot-tip">{{ $t("home.tomorrowBurn") }}: 2% · {{ $t("home.unit") }}</div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { onMounted, onUnmounted } from "vue";
+import { computed, onMounted, onUnmounted } from "vue";
 import { useRouter } from "vue-router";
+import { useI18n } from "vue-i18n";
 import WalletHeader from "../components/WalletHeader.vue";
 import DataDashboard from "../components/DataDashboard.vue";
 import QuotaCard from "../components/QuotaCard.vue";
+import ExitProgressCard from "../components/ExitProgressCard.vue";
+import DividendCard from "../components/DividendCard.vue";
 import { usePoolData } from "../composables/usePoolData";
 import { useWallet } from "../composables/useWallet";
 
-const { poolStats, userStats, forceSellStats, loaded, error, refresh, fmtCompact, fmtNum } = usePoolData();
+const { poolStats, userStats, forceSellStats, dividendStats, loaded, error, refresh, fmtCompact, fmtNum } =
+  usePoolData();
 const { listenAccountChange } = useWallet();
+const { t } = useI18n();
 const router = useRouter();
 
 let timer: ReturnType<typeof setInterval> | null = null;
+
+/** v17：底池创建累计行（无 Creator 数据时整行隐藏） */
+const creatorLine = computed(() => {
+  const p = poolStats.value;
+  const parts: string[] = [];
+  if (p.creatorUsdtIn) parts.push(`${t("home.poolCreated")} ${fmtNum(p.creatorUsdtIn, 2)} U`);
+  if (p.lpLocked) parts.push(`LP ${fmtCompact(p.lpLocked)}`);
+  if (parts.length === 0) return "";
+  parts.push(t("home.lpLocked"));
+  return parts.join(" · ");
+});
 
 function goSwap() {
   router.push("/swap");
@@ -151,6 +182,12 @@ onUnmounted(() => {
       background: rgba(245, 193, 93, 0.08);
     }
   }
+}
+.creator-line {
+  margin-top: 10px;
+  text-align: center;
+  font-size: 11px;
+  color: var(--text-tertiary);
 }
 .asset-row {
   display: grid;

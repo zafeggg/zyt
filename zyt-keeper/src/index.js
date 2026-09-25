@@ -6,7 +6,7 @@ import { Monitor } from "./monitor.js";
 import { ForceSellTracker } from "./forcesell.js";
 import { JsonRpcProvider, Contract } from "ethers";
 import { CONFIG } from "./config.js";
-import { POOL_VIEW_ABI } from "./abis.js";
+import { POOL_VIEW_ABI, MINING_USERINFO_ABI } from "./abis.js";
 import { lock } from "./lock.js";
 import { logRun } from "./alert.js";
 
@@ -14,7 +14,7 @@ import { logRun } from "./alert.js";
  * 众赢币 ZYT 链下服务主入口：
  * 1. 索引器：事件轮询入库
  * 2. 账本：事件重放重建用户状态
- * 3. Keeper：每日 08:00 快照（签名钱包 + 双实例互斥锁）
+ * 3. Keeper：每日 08:01 快照（签名钱包 + 双实例互斥锁）
  * 4. 监控：规则引擎（底池突变/大额卖出/滑点跳变/索引延迟/失败率）
  * 5. 强制卖出追踪：4×15 天窗口应卖量/风险状态（链上权威遍历）
  * 6. API：数据查询
@@ -36,14 +36,18 @@ async function main() {
   const provider = new JsonRpcProvider(CONFIG.rpc, CONFIG.chainId, { staticNetwork: true });
   const pool = new Contract(CONFIG.contracts.pool, POOL_VIEW_ABI, provider);
   const zyt = new Contract(CONFIG.contracts.zyt, ["function getUserCount() view returns (uint256)", "function getUserAt(uint256) view returns (address)"], provider);
-  const mining = new Contract(CONFIG.contracts.mining, ["function userInfo(address) view returns (uint256,uint256,uint256,uint256,uint256,uint256,bool)"], provider);
+  const mining = new Contract(CONFIG.contracts.mining, MINING_USERINFO_ABI, provider);
+  // v17：对账参数校准用（staticExitMul）；config 地址未配置时为 null，ledger 沿用环境变量默认值
+  const configC = CONFIG.contracts.config
+    ? new Contract(CONFIG.contracts.config, ["function staticExitMul() view returns (uint256)"], provider)
+    : null;
 
   // 1+2. 索引 + 账本
   // 监控引擎先行创建（indexer 事件回调需要引用它），再注入 indexer（R4 需要 lastBlock）
   const monitor = new Monitor({ provider, pool });
   const indexer = new Indexer({ onEvent: (name, args) => monitor.onEvent(name, args) });
   monitor.setIndexer(indexer);
-  const ledger = new Ledger(provider, { pool, zyt, mining });
+  const ledger = new Ledger(provider, { pool, zyt, mining, config: configC });
   await indexer.syncOnce().catch((e) => logRun("indexer", "error", e.message));
   await ledger.rebuild();
   indexer.start();

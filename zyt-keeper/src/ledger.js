@@ -3,33 +3,48 @@ import { CONFIG } from "./config.js";
 import { logRun, notify } from "./alert.js";
 
 /**
- * 链下账本：
- * - 从 events 增量汇总用户状态（入金/提取/额度/算力基数/出局）
+ * 链下账本（v9 口径，2026-09-24）：
+ * - 从 events 增量汇总用户状态（入金/买入/卖出/算力基数/静态出局/动态额度）
  * - 算力日复利计算（power = base × 1.01^n）
  * - 全网算力统计（供 Keeper 快照传入）
- * - 每日对账（链上 pool 状态 vs 本地账本）
- * v8：全部方法 async（存储层统一异步接口，兼容内存 SQLite / MySQL）
+ * - 每日对账（链上 pool 真池状态 vs 本地账本）
+ *
+ * v9 事件口径（真池 USDT↔ZYT 直换）：
+ * - Deposited(user, usdt, power, quota, ref)：入金得算力 + 买额（quota）；动态额度 = usdt×5
+ * - Bought(user, usdtIn, zytOut)：真实 AMM 买入，不影响账本提取额（买币是投入）
+ * - Sold(user, zytIn, usdtOut, rate)：卖出实收 USDT 计入 withdraw_total（静态出局进度）
+ * - RefPaid(receiver, usdtAmount, level)：推荐奖励 USDT 直发，同时消耗 receiver 动态额度（加速释放）
+ * - Converted / BasePoolFunded 已删除（v9 无算力兑换/记账建池）
+ * - DynamicExited：动态额度耗尽（复投恢复，Deposited 分支重置）
  */
 export class Ledger {
   constructor(provider, contracts) {
     this.provider = provider;
     this.contracts = contracts;
+    /** 静态出局倍数（reconcile 时以链上 config 校准） */
+    this.exitMul = BigInt(CONFIG.params?.staticExitMul || 2);
+    /** 动态额度倍数（v9 加速释放；reconcile 校准） */
+    this.dynamicQuotaMul = BigInt(CONFIG.params?.dynamicQuotaMul || 5);
   }
 
   /** 增量重放事件，重建用户账本 */
   async rebuild() {
     const db = await getDb();
     await db.exec("DELETE FROM users;");
-    // v9 修复：按 chain_id 过滤重放——防本地联调（31337）与 testnet 事件混入同一张 events 表
-    // 污染 users 账本与 totalPower（曾导致 users=4：3 个 hardhat 幽灵用户 + 1 个 testnet 真实用户）
+    // Sold 同 tx 去重集合（每次 rebuild 重置；Pool.Sold 与 Mining.Sold 同 tx 双 emit 只记一次）
+    const seenSoldTx = new Set();
+    // 按 chain_id 过滤重放——防本地联调（31337）与 testnet 事件混入同一张 events 表
     const rows = await db
-      .all("SELECT name, from_addr, to_addr, amount, extra FROM events WHERE chain_id=? ORDER BY block, log_index", [CONFIG.chainId]);
+      .all("SELECT name, from_addr, to_addr, amount, extra, created_at, tx_hash FROM events WHERE chain_id=? ORDER BY block, log_index", [CONFIG.chainId]);
     const upsertSql = `
-      INSERT INTO users (address, deposit_total, withdraw_total, dynamic_quota, dynamic_withdrawn, power_base, power_day, is_exited, updated_at)
-      VALUES (?,?,?,?,?,?,?,?,?)
+      INSERT INTO users (address, deposit_total, withdraw_total, converted_total, received_value, exit_day, dynamic_quota, dynamic_withdrawn, power_base, power_day, is_exited, updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
       ON CONFLICT(address) DO UPDATE SET
         deposit_total=excluded.deposit_total,
         withdraw_total=excluded.withdraw_total,
+        converted_total=excluded.converted_total,
+        received_value=excluded.received_value,
+        exit_day=excluded.exit_day,
         dynamic_quota=excluded.dynamic_quota,
         dynamic_withdrawn=excluded.dynamic_withdrawn,
         power_base=excluded.power_base,
@@ -41,31 +56,87 @@ export class Ledger {
       const extra = JSON.parse(r.extra || "{}");
       if (r.name === "Deposited") {
         await this._apply(upsertSql, r.to_addr || extra.user, (u) => {
-          u.deposit_total += BigInt(extra.usdt);
-          u.power_base += BigInt(extra.power);
-          u.power_day = Math.floor(Date.now() / 86400000);
-          u.dynamic_quota = u.deposit_total * 5n;
+          const usdt = BigInt(extra.usdt ?? 0);
+          const power = BigInt(extra.power ?? 0);
+          const today = Math.floor(Date.now() / 86400000);
+          u.deposit_total += usdt;
+          // v9：动态额度叠加（加速释放载体），复投重置出局状态
+          u.dynamic_quota += usdt * this.dynamicQuotaMul;
+          u.is_exited = 0;
+          u.exit_day = 0;
+          // P1-12：与合约同口径，先固化此前累积的复利再重置起点
+          if (u.power_base > 0n) {
+            u.power_base = this._compound(u.power_base, Math.max(today - u.power_day, 0));
+          }
+          u.power_base += power;
+          u.power_day = today;
+          this._applyExit(u);
+        });
+      } else if (r.name === "RefPaid") {
+        // v9 加速释放：推荐奖励逐笔消耗 receiver 动态额度
+        await this._apply(upsertSql, extra.receiver || r.from_addr, (u) => {
+          const paid = BigInt(extra.usdtAmount ?? 0);
+          u.dynamic_withdrawn += paid;
+          if (u.dynamic_withdrawn > u.dynamic_quota) u.dynamic_withdrawn = u.dynamic_quota;
         });
       } else if (r.name === "Sold") {
-        await this._apply(upsertSql, extra.user, (u) => {
-          u.withdraw_total += BigInt(extra.usdtOut);
-          u.is_exited = u.deposit_total > 0n && u.withdraw_total >= u.deposit_total * 2n;
+        // 同 tx 双 Sold 事件（Pool.Sold + Mining.Sold 各 emit 一条）只记一次，
+        // 否则卖出实收 USDT 重复计入 withdraw_total（实测账本 3.0002 vs 链上 2.018 有偏差）
+        const txKey = String(r.tx_hash || "");
+        if (txKey) {
+          if (seenSoldTx.has(txKey)) continue;
+          seenSoldTx.add(txKey);
+        }
+        await this._apply(upsertSql, extra.user || extra.seller, (u) => {
+          u.withdraw_total += BigInt(extra.usdtOut ?? 0);
+          this._applyExit(u);
         });
-      } else if (r.name === "Claimed") {
-        await this._apply(upsertSql, extra.user, (u) => {
-          // v8：使用事件中的 usdt 等值（与链上 dynamicWithdrawn 一致）
-          u.dynamic_withdrawn += BigInt(extra.usdt ?? extra.reward ?? 0);
+      } else if (r.name === "StaticExited") {
+        // 链上出局事件：记录出局日（事件无时间参数，用入库时间近似出块日）
+        const addr = extra.user || r.from_addr;
+        await this._apply(upsertSql, addr, (u) => {
+          u.is_exited = 1;
+          if (!u.exit_day) u.exit_day = Math.floor(Number(r.created_at || 0) / 86400);
         });
-      } else if (r.name === "RefReward") {
-        await this._apply(upsertSql, extra.receiver, (u) => {
-          // v8：使用事件中的 usdt 等值（修复前只能用 rewardZyt 导致账本与链上不一致）
-          u.dynamic_withdrawn += BigInt(extra.usdt ?? extra.reward ?? 0);
+      } else if (r.name === "TransferLedger") {
+        // P1-7：转账折算记账。转出计入提取额，转入计入受赠额（额度随币转移）
+        const v = BigInt(extra.usdtValue ?? 0);
+        const isOut = extra.isOut === true || extra.isOut === "true";
+        await this._apply(upsertSql, extra.user, (u) => {
+          if (isOut) {
+            u.withdraw_total += v;
+            this._applyExit(u);
+          } else {
+            u.received_value += v;
+            this._applyExit(u);
+          }
         });
       }
+      // Bought / Claimed / DividendSettled / DailyReleased：不影响账本字段
+      // （买入是投入非提取；分红从 pool 分红池划转，已由 /records 事件流呈现）
     }
     const n = await db.get("SELECT count(*) c FROM users");
     const count = n ? Number(n.c) : 0;
     logRun("ledger", "ok", `rebuild users=${count}`);
+  }
+
+  /**
+   * 静态出局判定：累计提取 USDT 达入金 × exitMul 即停产。
+   * 与合约 ZYTCompute.isStaticExited 同口径（入金与受赠双零时不判出局）。
+   */
+  _applyExit(u) {
+    // 已出局：链上不会因后续事件自动恢复（只有复投会重置，走 Deposited 分支）
+    if (u.exit_day > 0) {
+      u.is_exited = 1;
+      return;
+    }
+    // 与链上 ZYTCompute.isStaticExited 同口径：上限 = 入金 × 倍数 + 受赠，双零不判出局
+    const cap = u.deposit_total * this.exitMul + u.received_value;
+    const exited = (u.deposit_total > 0n || u.received_value > 0n) && u.withdraw_total >= cap;
+    if (exited) {
+      u.exit_day = Math.floor(Date.now() / 86400000);
+      u.is_exited = 1;
+    }
   }
 
   async _apply(upsertSql, addr, fn) {
@@ -76,6 +147,9 @@ export class Ledger {
     const u = {
       deposit_total: row ? BigInt(row.deposit_total) : 0n,
       withdraw_total: row ? BigInt(row.withdraw_total) : 0n,
+      converted_total: row ? BigInt(row.converted_total || "0") : 0n,
+      received_value: row ? BigInt(row.received_value || "0") : 0n,
+      exit_day: row ? Number(row.exit_day || 0) : 0,
       dynamic_quota: row ? BigInt(row.dynamic_quota) : 0n,
       dynamic_withdrawn: row ? BigInt(row.dynamic_withdrawn) : 0n,
       power_base: row ? BigInt(row.power_base) : 0n,
@@ -85,19 +159,40 @@ export class Ledger {
     fn(u);
     await db.run(
       upsertSql,
-      [addr, String(u.deposit_total), String(u.withdraw_total), String(u.dynamic_quota), String(u.dynamic_withdrawn), String(u.power_base), u.power_day, u.is_exited ? 1 : 0, Math.floor(Date.now() / 1000)]
+      [
+        addr,
+        String(u.deposit_total),
+        String(u.withdraw_total),
+        String(u.converted_total),
+        String(u.received_value),
+        u.exit_day,
+        String(u.dynamic_quota),
+        String(u.dynamic_withdrawn),
+        String(u.power_base),
+        u.power_day,
+        u.is_exited ? 1 : 0,
+        Math.floor(Date.now() / 1000),
+      ]
     );
+  }
+
+  /** 算力复利纯计算：base × 1.01^days（上限 365 天，与合约 ZYTCompute.MAX_COMPOUND_DAYS 一致） */
+  _compound(base, days) {
+    const n = Math.min(Math.max(days, 0), 365);
+    let p = base;
+    for (let i = 0; i < n; i++) p = p + (p * 100n) / 10000n; // 1%
+    return p;
   }
 
   /** 算力复利：base × 1.01^days */
   async powerOf(addr, nowDay = Math.floor(Date.now() / 86400000)) {
     const db = await getDb();
-    const row = await db.get("SELECT power_base, power_day FROM users WHERE address=?", [addr]);
+    const row = await db.get("SELECT power_base, power_day, exit_day FROM users WHERE address=?", [addr]);
     if (!row || BigInt(row.power_base) === 0n) return 0n;
-    let p = BigInt(row.power_base);
-    const days = Math.min(Math.max(nowDay - row.power_day, 0), 365);
-    for (let i = 0; i < days; i++) p = p + (p * 100n) / 10000n; // 1%
-    return p;
+    // 与合约 _powerOf 同口径：出局后算力停发（历史算力仍可回算，分红按日结算依赖）
+    const exitDay = Number(row.exit_day || 0);
+    if (exitDay > 0 && nowDay >= exitDay) return 0n;
+    return this._compound(BigInt(row.power_base), nowDay - row.power_day);
   }
 
   /** 全网算力（Σ 复利后） */
@@ -109,28 +204,51 @@ export class Ledger {
     return sum;
   }
 
-  /** 每日对账（#3 真对账）：链上 pool 状态 → pool_state + 链上 userList 逐用户比对链下账本 */
+  /** 每日对账（#3 真对账）：链上真池状态 → pool_state + 链上 userList 逐用户比对链下账本 */
   async reconcile() {
-    const { pool, zyt, mining } = this.contracts;
-    const [gst, zyt2, usdt, snap, price, stage, slip] = await Promise.all([
-      pool.poolGST(),
+    const { pool, zyt, mining, config } = this.contracts;
+    // 以链上倍数校准出局/动态额度口径（读失败沿用配置值）
+    if (config) {
+      try {
+        const mul = BigInt(await config.staticExitMul());
+        if (mul > 0n && mul !== this.exitMul) {
+          logRun("reconcile", "ok", `staticExitMul 校准 ${this.exitMul} → ${mul}`);
+          this.exitMul = mul;
+        }
+        try {
+          const dq = BigInt(await config.dynamicQuotaMul());
+          if (dq > 0n) this.dynamicQuotaMul = dq;
+        } catch { /* 老配置合约无此函数 */ }
+      } catch {
+        /* 读失败：沿用现值 */
+      }
+    }
+    // v9：真池数据源 = pair 储备（poolZYT/poolUSDT 为 view 直读 pair）
+    const [zytRes, usdtRes, peak, snapUsdt, price, stage, slip, divPool, lpBurned] = await Promise.all([
       pool.poolZYT(),
       pool.poolUSDT(),
-      pool.snapshotPoolGST(),
+      pool.peakPoolUSDT ? pool.peakPoolUSDT().catch(() => 0n) : Promise.resolve(0n),
+      pool.snapshotPoolUSDT ? pool.snapshotPoolUSDT().catch(() => 0n) : Promise.resolve(0n),
       pool.getPrice(),
       pool.getStage(),
       pool.getCurrentSlippage(),
+      pool.dividendPoolZyt ? pool.dividendPoolZyt().catch(() => 0n) : Promise.resolve(0n),
+      pool.totalLpBurned ? pool.totalLpBurned().catch(() => 0n) : Promise.resolve(0n),
     ]);
     const db = await getDb();
+    // pool_state 列沿用（pool_gst/snapshot_gst/day_sold_gst 为 v8 遗留列写 '0'；
+    // peak 滑点基准记入 snapshot_gst，分红池记入 day_sold_gst，供前端读取不新建表）
     await db.run(
       `
-      INSERT INTO pool_state (id, pool_gst, pool_zyt, pool_usdt, snapshot_gst, price, slippage_pct, stage, updated_at)
-      VALUES (1,?,?,?,?,?,?,?,?)
+      INSERT INTO pool_state (id, pool_gst, pool_zyt, pool_usdt, snapshot_gst, price, slippage_pct, stage, day_sold_gst, snapshot_pool_usdt, updated_at)
+      VALUES (1,?,?,?,?,?,?,?,?,?,?)
       ON CONFLICT(id) DO UPDATE SET pool_gst=excluded.pool_gst, pool_zyt=excluded.pool_zyt,
         pool_usdt=excluded.pool_usdt, snapshot_gst=excluded.snapshot_gst, price=excluded.price,
-        slippage_pct=excluded.slippage_pct, stage=excluded.stage, updated_at=excluded.updated_at
+        slippage_pct=excluded.slippage_pct, stage=excluded.stage,
+        day_sold_gst=excluded.day_sold_gst, snapshot_pool_usdt=excluded.snapshot_pool_usdt,
+        updated_at=excluded.updated_at
     `,
-      [String(gst), String(zyt2), String(usdt), String(snap), String(price), Number(slip) / 100, Number(stage), Math.floor(Date.now() / 1000)]
+      ["0", String(zytRes), String(usdtRes), String(peak), String(price), Number(slip) / 100, Number(stage), String(divPool), String(snapUsdt), Math.floor(Date.now() / 1000)]
     );
 
     // ---- #3 真对账：链上 userList 逐用户比对（差异 >0.1% 视为不一致） ----
@@ -142,7 +260,8 @@ export class Ledger {
     if (zyt && mining && total > 0) {
       for (let i = 0; i < total; i++) {
         const addr = String(await zyt.getUserAt(i)).toLowerCase();
-        // 链上：userInfo = (depositTotal, withdrawTotal, dynamicQuota, dynamicWithdrawn, power, lpQuota, isExited)
+        // v9 userInfo 8 元组：(depositTotal, withdrawTotal, power, dynamicQuota, dynamicWithdrawn, buyQuotaLeft, staticExited, dynamicExited)
+        // 比对 depositTotal / withdrawTotal / dynamicQuota / dynamicWithdrawn 四项
         let chain;
         try {
           chain = await mining.userInfo(addr);
@@ -153,8 +272,8 @@ export class Ledger {
         const fields = [
           ["depositTotal", chain[0], local ? local.deposit_total : "0"],
           ["withdrawTotal", chain[1], local ? local.withdraw_total : "0"],
-          ["dynamicQuota", chain[2], local ? local.dynamic_quota : "0"],
-          ["dynamicWithdrawn", chain[3], local ? local.dynamic_withdrawn : "0"],
+          ["dynamicQuota", chain[3], local ? local.dynamic_quota : "0"],
+          ["dynamicWithdrawn", chain[4], local ? local.dynamic_withdrawn : "0"],
         ];
         let userMax = 0;
         for (const [name, cVal, lVal] of fields) {
@@ -163,6 +282,17 @@ export class Ledger {
           const diff = c > l ? c - l : l - c;
           const pct = c === 0n ? (l === 0n ? 0 : 100) : Number((diff * 10000n) / c) / 100;
           if (pct > userMax) userMax = pct;
+        }
+        // P1-7：链上受赠值 vs 本地（transferValueOf 返回 (receivedValue, withdrawCap)）
+        try {
+          const tv = await mining.transferValueOf(addr);
+          const chainReceived = BigInt(tv[0]);
+          const localReceived = local ? BigInt(local.received_value || "0") : 0n;
+          const d = chainReceived > localReceived ? chainReceived - localReceived : localReceived - chainReceived;
+          const pct = chainReceived === 0n ? (localReceived === 0n ? 0 : 100) : Number((d * 10000n) / chainReceived) / 100;
+          if (pct > userMax) userMax = pct;
+        } catch {
+          /* 合约未部署该接口，跳过 */
         }
         if (userMax > maxDiffPct) maxDiffPct = userMax;
         if (userMax * 100 > THRESHOLD_BPS) {
@@ -180,8 +310,8 @@ export class Ledger {
       logRun("reconcile", "error", `真对账发现 ${diffUsers}/${total} 用户差异, max=${maxDiffPct.toFixed(2)}%`);
       await notify(`[ZYT Keeper] 对账异常: ${diffUsers}/${total} 用户链上链下不一致, max=${maxDiffPct.toFixed(2)}% (${diffs.slice(0, 5).join(", ")})`);
     } else {
-      logRun("reconcile", "ok", `pool gst=${gst} zyt=${zyt2} usdt=${usdt} price=${price} stage=${stage} slip=${Number(slip) / 100}% | 对账 ${total} 用户一致`);
+      logRun("reconcile", "ok", `pool zyt=${zytRes} usdt=${usdtRes} peak=${peak} price=${price} stage=${stage} slip=${Number(slip) / 100}% lpBurned=${lpBurned} | 对账 ${total} 用户一致`);
     }
-    return { gst: String(gst), zyt: String(zyt2), usdt: String(usdt), price: String(price), stage: Number(stage), slippage: Number(slip) / 100, reconcile: { total, diffUsers, maxDiffPct, status } };
+    return { zytReserve: String(zytRes), usdtReserve: String(usdtRes), peak: String(peak), price: String(price), stage: Number(stage), slippage: Number(slip) / 100, lpBurned: String(lpBurned), reconcile: { total, diffUsers, maxDiffPct, status } };
   }
 }

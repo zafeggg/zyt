@@ -3,6 +3,13 @@
 > 定位：每个阶段、每一步给出**具体怎么做**——命令、判定标准、产出物。通用步骤可直接套用；【ZYT】为项目特化操作。
 > 使用：打印本表按顺序执行；每步"产出物"为完成凭证，由复核人确认签字。
 > 原则：双人操作、每步验证、不在计划内不改动、任何时刻可回滚。
+> **版本 v2.1（2026-09-14）：本版为「ZYT 主网执行版」**，已把 testnet 参照切换为主网待填项；参数总表与逐项替换清单见《上线操作手册》顶部及 1.3.7 / 1.3.8 / 1.5。
+>
+> **⚠️ v9 口径变更（2026-09-24，执行前必读）**：弃 GST，USDT↔ZYT 单币直换（真池）。差异要点：
+> ① 合约 10→8（GSTToken 删除）；② deploy.js 自动建池（createInitialPool），无需手动 Pancake 建池与 PAIR_ADDRESS 回填；
+> ③ deploy 前置仅需 2.1 万 USDT + BNB（GST 相关准备步骤跳过）；④ Router 不再需要；
+> ⑤ 验收新增：lockedLiquidity>0 / totalSupply=21亿 / 卖闸拦截实测 / 首次通缩后池U不变；
+> ⑥ verify 与 smoke 脚本待适配 v9。完整对照表见《上线操作手册》顶部「v9 口径变更说明」。
 
 ---
 
@@ -38,7 +45,7 @@
 
 ### 0.4 确定上线窗口
 - **做什么**：选业务低峰期，避开关键时段。
-- **怎么做**：查看业务流量曲线（日活时段），选低峰；【ZYT】避开每日 08:00-08:10 快照/通缩窗口，不在通缩日 08:00 前后 2h 内动 keeper。
+- **怎么做**：查看业务流量曲线（日活时段），选低峰；【ZYT】避开每日 08:01-08:11 快照/通缩窗口，不在通缩日 08:01 前后 2h 内动 keeper。
 - **判定**：窗口内操作时长 ≤ 预留缓冲（如 2h 窗口留 3h 缓冲）。
 - **产出**：上线时间表（见文末模板）。
 
@@ -153,10 +160,13 @@
 - **产出**：演练记录。
 
 **【ZYT】特化**：
-- 合约参数核对表：9 合约地址、owner、keeperAddress、买入白名单、deflationFloor、滑点档位、poolStage1/2USDT 逐项与部署记录比对（链上 `eth_call` 读取 vs 部署日志）。
+- 合约参数核对表（主网逐项，`eth_call` 读取 vs 部署日志）：9 合约地址、`owner` == W2 治理多签、`marketAddress` == W3 营销 Safe、`technicalAddress` == W4 技术 Safe、`keeperAddress` == W5 签名钱包、**`buyWhitelistEnabled` == true**、`deflationFloor` == 500 万、滑点档位 tier1-4 == 1000/2000/3000/4000、`poolStage1USDT` == 0、`poolStage2USDT` == 2000 万、各白名单地址 `buyWhitelist` == true。
 - 多签就绪：owner 权限移交 Gnosis Safe（营销+技术多签）；移交交易在测试网先演练一遍签名流程；**移交后单一 EOA 不再有管理权限**。
-- 前端配置核对：主网 chainId(56)、RPC、合约地址、API 域名、`apiBase` 降级开关。
-- 【ZYT 托管待定】ZYT 前端生产托管方案未定（独立域名/CDN，不使用 GYT 服务器）——上线前必须确定并完成 1.3.1/1.3.4。
+- 【ZYT 主网】deploy.js 环境变量就绪（缺一即 No-Go）：`CONFIRM_MAINNET=1`、`MARKET_ADDRESS`、`TECHNICAL_ADDRESS`、`KEEPER_ADDRESS`、`WHITELIST`（首批白名单）、`USDT_MOCK` 未设 1。
+- 【ZYT 主网】keeper `.env` 全量替换：`CHAIN_ID=56`、主网 RPC、6 个主网合约地址、`START_BLOCK` = 部署区块高度、keeper 私钥为**新建独立钱包**（严禁沿用 testnet）、`ALERT_WEBHOOK_URL` 已实测、主网库 **`zyt_keeper_mainnet`（2026-09-14 定案）**。替换对照见操作手册 1.3.7。
+- 前端配置核对：主网 chainId(56)、RPC、8 个合约地址、API 域名、`apiBase` 降级开关、**`rootInvite`（官方码 = 营销 Safe 地址，主网必须填写）**；构建需显式 `VITE_CHAIN=bsc`，防误打 testnet 包。
+- 【ZYT 托管已定，2026-09-10】前端生产托管 = **境外静态托管**（Cloudflare Pages / Vercel / 境外 VPS）；**禁止部署到境内云主机**（阿里云大陆 ECS 承载币圈前端已被判「涉嫌欺诈」并下发整改通知）；域名境外注册与解析，无需 ICP 备案。
+- 【ZYT 密钥，2026-09-14 决策】明文 `.env` 方案：部署/owner 私钥存本地 `zyt-contracts/.env`（**不上服务器**，遵守三不原则：不进云同步 / 不进 Git / 不留长期副本，部署完成后清除或换回测试值）；keeper 签名私钥存服务器 `.env` 并 `chmod 600`。完整规范见 `docs/主网密钥管理清单.md`；长期化解方式 = owner 转 Safe 多签。
 
 ### 1.4 数据备份与恢复演练
 
@@ -184,13 +194,26 @@
 
 > 按序执行，**每步验证通过才进下一步**；执行人操作、复核人核对输出。
 
+**【ZYT 主网】T-1 前必须完成（不可回滚动作，不放在 T-0 现场）**
+
+| 序 | 事项 | 怎么做 | 验证点 |
+|---|---|---|---|
+| P1 | 部署环境变量就绪 | **本次为试运行版**：`.env` 三项地址就绪（营销 Safe `0x1bc03F…6786` ✓、技术 Safe `0x860D47…eec3` ✓、keeper `0x09Be…B641` ✓）；`USDT_MOCK=1` 执行时注入；`WHITELIST` 留空（部署后按附录 D 加白）；W1 `0xB7233A…79F9` 充 ≥0.1 BNB（**TestUSDT 由 faucet 自动发，无需真实 USDT**）；W2 治理多签 `0xa67E65FA6daa80eFFEE911E042C0f5b0C8718C33` 已核验（2/3）供正式版移交 | 三个 Safe 均链上核验（W2 2/3、W3 2/3、W4 2/2）；keeper 三方一致性已核对（见操作手册 1.3.5）；W1 余额 >0.1 BNB |
+| P2 | 主网部署（试运行版） | `USDT_MOCK=1 npx hardhat run scripts/deploy.js --network bsc`（交互输 yes），或加 `CONFIRM_MAINNET=1` 跳过交互；owner 留 W1 不移交 | 9 地址 + **TestUSDT 地址** + 部署区块高度 + tx hash 归档；日志出现「主网 TestUSDT 试运行模式」警告块且 network=bsc(56)；部署完成立即清除/替换 `.env` 的 `PRIVATE_KEY` |
+| P3 | 字节码 + 源码验证 | `node scripts/probe-bytecode.js`；`verify-all-mainnet.js --network bsc` | 字节码 match；bscscan 9/9 绿色勾 |
+| P4 | 参数核对 | 按操作手册 1.3.3 逐项 `eth_call` | owner/market/technical/keeper/白名单开关/stage/滑点档位全部一致 |
+| P5 | owner 移交 W2 多签（**正式版必做，试运行版跳过**） | `transferOwnership(0xa67E65FA6daa80eFFEE911E042C0f5b0C8718C33)` | `owner() == W2`；原部署钱包已无权限（试调用 setUint 应 revert） |
+| P6 | 建池 + 底池注入 + LP 打黑洞 | 建 GST/USDT 池（约 2.1 万 U）→ 注入 → LP 销毁 | 池可兑换；LP 黑洞余额与公示哈希一致 |
+| P7 | keeper 切主网 + 首日快照 | 替换 `.env` 全部项（操作手册 1.3.7）→ 启动 | 日志 `chain=56`；首日 08:01 快照上链、MySQL 落库 |
+| P8 | 白名单放行 | 走 W2 多签批量加白（操作手册附录 D） | `buyWhitelist(地址)==true` 且 `buyWhitelistEnabled()==true` |
+
 | 序 | 做什么 | 怎么做 | 验证点（怎么做） |
 |---|---|---|---|
 | T-30min | 集合对齐 | 群内过 checklist；确认回滚基准产物路径；宣告中止条件 | 全员已读；基准产物可访问 |
 | 1 | 数据层变更（如有） | ①再次备份 `mysqldump`；②执行迁移脚本 `node scripts/migrate.js`；③验证 | 迁移日志无 ERROR；`SHOW TABLES` 新表存在；旧代码冒烟兼容 |
 | 2 | 后端发布 | ①`pm2 deploy` 或上传新版本目录；②`pm2 restart <app>`；③健康检查 | `curl http://127.0.0.1:<port>/health` = ok；日志无堆栈 |
-| 3 | 链下服务【ZYT keeper】 | ①`cd F:/zyt/zyt-keeper`；②先停旧实例（确认无残留占用 8080：`netstat -ano \| grep :8080`）；③`node src/index.js`（后台）；④看启动日志 | 日志出现：`ledger rebuild users=N`、`keeper start cron="0 0 * * *" tz=UTC`、`api start :8080`、`reconcile ok 对账 N 用户一致`；`curl http://127.0.0.1:8080/health` = ok |
-| 4 | 前端发布 | ①上传 dist 到托管位置（`?v=` 参数已递增）；②CDN/缓存刷新 | 浏览器强制刷新（Ctrl+F5）后版本号/指纹正确；资源 200 |
+| 3 | 链下服务【ZYT keeper】 | ①确认 `.env` 已切主网（`CHAIN_ID=56` / 主网地址 / `START_BLOCK`）；②停旧实例（`netstat -ano \| grep :8080` 无残留）；③`node src/index.js`；④看启动日志 | 日志出现：`chain=56`、`ledger rebuild users=N`、`keeper start cron="1 0 * * *" tz=UTC`、`api start :8080`；`curl http://127.0.0.1:8080/health` = ok |
+| 4 | 前端发布 | ①`VITE_CHAIN=bsc` 构建 dist 并递增 `?v=` 参数；②核对 8 地址与 `rootInvite`；③发境外托管（Cloudflare Pages / Vercel / 境外 VPS，禁止境内云主机）；④CDN/缓存刷新 | 浏览器强制刷新（Ctrl+F5）后版本号/指纹正确；页面读到的合约地址与主网一致；资源 200 |
 | 5 | DNS/流量切换（如涉及） | 修改解析/负载均衡权重，按 10%→50%→100% 灰度 | `dig`/`nslookup` 解析生效；各比例下错误率正常 |
 
 **执行纪律**：

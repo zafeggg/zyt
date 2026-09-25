@@ -7,11 +7,41 @@
 
 ---
 
+## ⚠️ v9 口径变更说明（2026-09-24，执行前必读）
+
+> v9 弃 GST，改 USDT↔ZYT 单币直换（真实 PancakeSwap V2 pair 底池）。本手册以下差异在执行时生效，
+> 与正文冲突处以本节为准（正文 v8 步骤保留作为流程骨架参照）：
+
+| 项 | v8（正文） | v9（执行口径） |
+|---|---|---|
+| 合约数量 | 10（含 GSTToken） | **8**（删 GSTToken；Creator 改为「初始建池 + LP 锁仓」） |
+| 初始建池 | 手动 Pancake 建 GST/ZYT 池 + PAIR_ADDRESS 回填 | **deploy.js 自动执行 createInitialPool**（2.1万U + 21亿ZYT），无需手动建池 |
+| deploy 前置 | deployer 持 2.1万 USDT + 21万 GST | **仅需 2.1万 USDT + BNB gas**（GST 不复存在） |
+| 部署确认 | 交互输 yes / CONFIRM_MAINNET=1 | 沿用 |
+| pair 接线 | 手动 setPair + setWhiteList(pair) | **脚本自动三处接线**（config/zyt/pool）+ pair 白名单 |
+| verify 脚本 | verify-all-mainnet.js（10 合约） | 待适配 v9（8 合约 + lib），执行前核对 ADDR_DEFAULTS |
+| keeper .env | SNAPSHOT_CRON=1 0 * * *（08:01） | 沿用 08:01；新增 v9 合约地址 8 个（无 GST 地址） |
+| keeper 对账 | daySoldGST/snapshotPoolUSDT 口径 | 真池 4 字段对账（deposit/withdraw/dynamicQuota/dynamicWithdrawn）+ 受赠值 |
+| 前端 config | GST 地址 + Router | **删除 GST/Router**；新增 factory（testnet/mainnet 分流）；合约地址 8 个 |
+| 前端交易 | convertPowerToZyt（approve→mining） | **mining.buy()**（approve USDT→mining）；卖出 approve 对象仍为 pool |
+| 验收清单 | 1.5.1b 手动建池 + 三项接线 | **改为：部署日志确认「Initial pool created」+ 「Pair wired」+ LP 锁仓量 > 0** |
+| 强卖窗口 | 60% 封顶（旧文案） | **50% 封顶**（20/30/40/50 累计，keeper forcesell.js 已同步） |
+| smoke 脚本 | smoke-testnet.js（v8 口径） | 未适配 v9，testnet 验收以 hardhat test + 部署日志代替 |
+
+**v9 新增上线验收项**：
+1. `creator.lockedLiquidity() > 0`（LP 锁仓生效）
+2. `zyt.totalSupply() == 21亿`（一次铸出，此后只减不增）
+3. `pool.poolUSDT() == 2.1万U` 且 `pool.poolZYT() == 21亿`（初始比例 1:100000，价格 0.00001U）
+4. 直接对 pair 转 ZYT 应 revert `ZYT: pair inflow gated`（卖闸生效）
+5. keeper 首次 dailySnapshot 后 `pool.poolUSDT()` 不变、`poolZYT()` 减约 2%、价格上升（U 回池 sync 生效）
+
+---
+
 ## 主网待填参数总表（部署完成后逐项回填）
 
 > 用法：部署主网后，从部署脚本输出中提取下列值，同时填入三处（前端 config / keeper .env / 文档），三处必须一致。
 
-### A. 合约地址（9 项，deploy.js 输出）
+### A. 合约地址（10 项，deploy.js 输出）
 
 | # | 合约 | 主网地址 | 已填前端 | 已填 keeper |
 |---|---|---|---|---|
@@ -24,6 +54,7 @@
 | 7 | ZYTDeflation | `待填` | ☐ | ☐ |
 | 8 | ZYTForceSell | `待填` | ☐ | ☐ |
 | 9 | ZYTCompute（库） | `待填` | 不需 | 不需 |
+| 10 | ZYTLiquidityCreator | `待填` | 不需 | 需（索引 BasePoolCreated） |
 
 ### B. 地址类参数（多签 / 钱包）
 
@@ -31,18 +62,21 @@
 |---|---|---|---|
 | 营销地址 W3（营销 Safe） | app.safe.global 创建（BSC 主网）**已链上核验 2026-09-14：threshold 2 / owners 3（2/3 ✓）** | `0x1bc03Fe18F9BabBc32f0B4046E13e387E9D16786` | `MARKET_ADDRESS`（已在 `.env`）；`config.marketAddress()`；**前端 rootInvite** |
 | 技术地址 W4（技术 Safe） | app.safe.global 创建（BSC 主网）**已链上核验 2026-09-14：threshold 2 / owners 2（2/2 ✓）** | `0x860D4704d6eee98Aa55A971Caf8BAA4134E8eec3` | `TECHNICAL_ADDRESS`（已在 `.env`）；`config.technicalAddress()`。⚠️ 2/2 任一 signer 丢失即永久锁死，建议改 2/3 或 1/2；keeper 保持 EOA 不上多签 |
-| keeper 签名钱包 W5 | 新建独立 EOA | **⚠ 待填：`.env` 当前未设置 `KEEPER_ADDRESS`** | `KEEPER_ADDRESS`；keeper `.env` 签名私钥。**不填会缺省为 deployer，导致 owner 移交多签后无人可触发每日快照** |
-| 治理多签 W2 | 钱包清单方案 A | `待填` | 部署后 `transferOwnership` 目标 |
+| keeper 签名钱包 W5 | keeper 独立 EOA（私钥存 `zyt-keeper/.env`）；**2026-09-14 确认并已填入 `.env`** | `0x09BeD12b5956E1E53668Aa10E242766E3aE3B641` | `KEEPER_ADDRESS`（已填）；keeper 侧 `KEEPER_PRIVATE_KEY` 为同一钱包。⚠️ testnet 链上 `keeperAddress` 仍为 `0xdFA5…a480`，与本地私钥不一致，testnet 快照需先对齐或停跑 |
+| 治理多签 W2 | app.safe.global 创建（BSC 主网）**已链上核验 2026-09-14：threshold 2 / owners 3（2/3 ✓，owner 集合与 W3 一致）** | `0xa67E65FA6daa80eFFEE911E042C0f5b0C8718C33` | **正式版** owner 移交目标（`transferOwnership`）；试运行版不移交，owner 留 W1 |
 | 部署钱包 W1 | 钱包清单方案 A | `待填` | 部署后退役冷备（私钥存本地 `.env`，不上服务器） |
 
 **核验记录（2026-09-14，RPC `bsc.publicnode.com`，chainId 56）**
 
 | Safe | 地址 | 字节码 | threshold | owners |
 |---|---|---|---|---|
+| 治理 W2 | `0xa67E65FA6daa80eFFEE911E042C0f5b0C8718C33` | SafeProxy 已部署 | 2 | `0x77B649f7…`、`0x2aE3BA7a…`、`0x28E4A5B4…`（与 W3 为同一组三人） |
 | 营销 W3 | `0x1bc03Fe18F9BabBc32f0B4046E13e387E9D16786` | SafeProxy 已部署 | 2 | `0x77B649f7…deB37`、`0x28E4A5B4…f20C4`、`0x2aE3BA7a…46A526` |
 | 技术 W4 | `0x860D4704d6eee98Aa55A971Caf8BAA4134E8eec3` | SafeProxy 已部署 | 2 | `0x2aE3BA7a…46A526`、`0xE30471a7…a6eD1` |
 
-> 注：`0x2aE3BA7a…46A526` 同时为两个 Safe 的 owner（交叉持有）；技术 Safe 2/2 的锁死风险已多次提示，上线前建议调整。
+> 权限分布观察：W2 与 W3 由同一组三人控制（各为 2/3），W4 为 2/2 且与 W2/W3 共享一名签名人。实际效果是两个签名人即可动用营销资金或治理参数，好处是团队小、操作快，代价是治理与资金权限未做人员分离。人手允许时建议为 W2 引入独立签名人。
+
+> 注：`0x2aE3BA7a…46A526` 同时为三个 Safe 的 owner（交叉持有）；技术 Safe W4 为 2/2，任一 signer 丢失即永久锁死，上线前建议调整为 2/3 或 1/2。
 
 ### C. 运行参数
 
@@ -90,7 +124,7 @@
 
 ### 0.4 确定上线窗口
 - **做什么**：选定执行时间
-- **怎么做**：选业务低峰；**避开每日 08:00-08:10 快照/通缩窗口**（快照前后各留 1 小时缓冲）；建议 14:00-17:00（白天响应快、跨部门在线）
+- **怎么做**：选业务低峰；**避开每日 08:01-08:11 快照/通缩窗口**（快照前后各留 1 小时缓冲）；建议 14:00-17:00（白天响应快、跨部门在线）
 - **【确认】** 窗口写入群日历，参与人确认
 
 ### 0.5 组织与分工
@@ -182,14 +216,14 @@ $ USDT_MOCK=1 npx hardhat run scripts/smoke-testnet.js --network bscTestnet
 - 步骤：用小额真实 USDT（建议 10-50U）走完整用户旅程
   1. 连接钱包 → 注册（填邀请码）→ 授权 USDT
   2. 入金 `deposit(amount, ref)` → 核对链上推荐绑定生效（`referrerOf(测试地址)` 非零）
-  3. 次日 08:00 快照后：核对产出领取、分红领取
+  3. 次日 08:01 快照后：核对分红领取（每日产出已停用，claimReward 应被拒）
   4. 卖出小额：核对滑点档位与 30/30/40 分账
   5. keeper 侧：`/stats`、`/user`、`/force-sell` 数据与链上一致
 - **【确认】** 全链路无 revert；入金金额与分账比例吻合；keeper 账本与链上一致；测试交易 hash 归档
 - ⚠️ 主网测试资金真实消耗，金额务必小额，测试完成后评估是否继续持有
 
 #### 1.2.3 UAT 业务验收
-- **怎么做**：产品在 staging（或 testnet 前端）完整走用户旅程：连接钱包 → 授权 → 入金 → 产出 → 分红 → 卖出 → 转账；每步截图
+- **怎么做**：产品在 staging（或 testnet 前端）完整走用户旅程：连接钱包 → 授权 → 入金 → 兑换（阶段 2 起）→ 分红 → 卖出 → 转账；每步截图
 - **【确认】** 验收单签字，截图归档
 
 #### 1.2.4 性能压测（keeper API）
@@ -242,10 +276,11 @@ $ grep -c -i "KEY\|PASSWORD\|SECRET" .env             # 敏感项只数键名，
 - **【确认】** 每项打印值与部署记录一致，形成核对表存档；任何一项不符即为 No-Go（owner 未移交、白名单总开关关闭属高危项）
 
 #### 1.3.4【ZYT】Gnosis Safe 多签
-- **状态（2026-09-14 已核验）**：营销 Safe `0x1bc03F…6786`（threshold 2 / owners 3）与技术 Safe `0x860D47…eec3`（threshold 2 / owners 2）均已在 BSC 主网部署，字节码为 SafeProxy；核验记录见顶部 B 表
-- **怎么做**：①上述核验已完成，如需复核可再跑 `getOwners()` / `getThreshold()`；②**在 testnet 或用模拟交易完整走一遍** setUint 提案-签名-执行流程（签名人数、确认顺序、执行延迟）；③部署时以两个 Safe 地址注入 `MARKET_ADDRESS` / `TECHNICAL_ADDRESS`（二者已在 `zyt-contracts/.env`）
-- **【确认】** 多签地址已接管合约 owner（`owner()` 返回 W2 治理 Safe 地址）；提案-签名-执行演练记录截图
-- ⚠️ 技术 Safe 当前 2/2，任一 signer 丢失即永久锁死，建议调整为 2/3 或 1/2；keeper 保持 EOA，不纳入多签
+- **状态（2026-09-14 已核验，共三个 Safe）**：治理 W2 `0xa67E65…8C33`（2/3）、营销 W3 `0x1bc03F…6786`（2/3）、技术 W4 `0x860D47…eec3`（2/2），均在 BSC 主网部署且字节码为 SafeProxy；核验记录见顶部表格
+- **怎么做**：①核验已完成，如需复核可再跑 `getOwners()` / `getThreshold()`；②**在 testnet 或用模拟交易完整走一遍** setUint 提案-签名-执行流程（签名人数、确认顺序、执行延迟）；③部署时以 W3/W4 注入 `MARKET_ADDRESS` / `TECHNICAL_ADDRESS`（已在 `zyt-contracts/.env`）；④正式版部署后 owner 移交 W2（1.5.5）
+- **【确认】** 正式版：`owner()` 返回 W2 治理多签；提案-签名-执行演练记录截图
+- ⚠️ 技术 Safe W4 当前 2/2，任一 signer 丢失即永久锁死，建议调整为 2/3 或 1/2；keeper 保持 EOA，不纳入多签
+- ⚠️ W2 与 W3 由同一组三人控制，两个签名人即可同时满足两者阈值，治理与资金权限未做人员分离
 
 #### 1.3.5【ZYT】keeper 签名钱包核对
 ```bash
@@ -256,6 +291,22 @@ import('ethers').then(({Wallet})=>{
 })"
 ```
 **【确认】** 输出地址 == 链上 `config.keeperAddress()`；该地址不持有项目资金、私钥仅存于运行环境 .env（已被 .gitignore 排除）
+
+**三方一致性检查（主网部署前必做，2026-09-14 新增）**
+
+| # | 位置 | 应为 |
+|---|---|---|
+| 1 | `zyt-contracts/.env` 的 `KEEPER_ADDRESS` | `0x09BeD12b5956E1E53668Aa10E242766E3aE3B641`（已填） |
+| 2 | `zyt-keeper/.env` 的 `KEEPER_PRIVATE_KEY` 推导地址 | 同一地址 |
+| 3 | 部署后链上 `config.keeperAddress()` | 同一地址 |
+
+三项不一致会导致每日快照调用被合约拒绝（`msg.sender != keeperAddress`），链路静默断裂。
+核对命令（不打印私钥）：
+```bash
+$ node -e 'const fs=require("fs");const pk=fs.readFileSync("F:/zyt/zyt-keeper/.env","utf8").match(/^KEEPER_PRIVATE_KEY=(.+)$/m)[1].trim();console.log("keeper 地址:", new (require("ethers").Wallet)(pk).address)'
+```
+
+⚠️ **当前遗留（testnet）**：testnet 第五套链上 `keeperAddress` = `0xdFA550005B75DA1930C65732Db46baD5cB50a480`，与本地私钥地址 `0x09Be…B641` 不一致。testnet 若继续试运行快照，需 owner 调 `setAddress("keeperAddress", 0x09BeD12b5956E1E53668Aa10E242766E3aE3B641)` 对齐；若停跑 testnet 则可忽略（主网部署时按本表填入即为一致）。
 
 #### 1.3.6 告警通道实测
 ```bash
@@ -278,10 +329,10 @@ $ curl -X POST "$ALERT_WEBHOOK_URL" -H "Content-Type: application/json" -d '{"te
 | `ZYT_ADDR` | `0xdF18…4166` | 主网 ZYTToken | 同上 |
 | `FORCESELL_ADDR` | `0x2468…ce06` | 主网 ZYTForceSell | 同上 |
 | `START_BLOCK` | `130555566` | **主网部署区块高度** | 事件索引起点，错填会漏事件或空跑 |
-| `KEEPER_PRIVATE_KEY` | testnet 明文私钥 | **新建独立钱包**（严禁沿用） | 地址 == `config.keeperAddress()` |
+| `KEEPER_PRIVATE_KEY` | keeper 独立钱包私钥 | **保持不变**（该钱包即正式 keeper 签名钱包 `0x09BeD12b5956E1E53668Aa10E242766E3aE3B641`，2026-09-14 确认） | 推导地址 == `contracts/.env` 的 `KEEPER_ADDRESS` == 部署后链上 `config.keeperAddress()`（三方一致，见 1.3.5） |
 | `DB_URL` | `zyt_keeper` 库 | **`zyt_keeper_mainnet`（2026-09-14 定案）** | 库创建成功；启动时 7 表自动建；MySQL 用户权限独立于 testnet 库 |
 | `ALERT_WEBHOOK_URL` | 空 | 真实 webhook | 实测能收到告警 |
-| `SNAPSHOT_CRON` | `0 0 * * *` | 保持（UTC 0 点 = 北京 08:00） | 时区已显式 UTC |
+| `SNAPSHOT_CRON` | `1 0 * * *` | 保持（UTC 00:01 = 北京 08:01） | 时区已显式 UTC |
 
 **【确认】** `node -e "import('dotenv').config()"` 逐项打印核对，敏感项只对数不打印；启动日志 `chain=56`、`signer=0x…`、`ledger: rebuild users=0`
 ⚠️ **私钥规范（2026-09-14 决策：明文 .env 方案）**：keeper 签名私钥明文存服务器 `zyt-keeper/.env`，须执行 `chmod 600 .env` + `git check-ignore .env` 复核；keeper 地址无资金权限（仅触发 dailySnapshot），泄露止损 = owner 调 `setAddress("keeperAddress", 新地址)`。完整规范见 `docs/主网密钥管理清单.md`；长期化解风险方式为 owner 转 Safe 多签
@@ -328,23 +379,41 @@ $ mysql -u zyt_keeper -p -e "SELECT (SELECT count(*) FROM zyt_keeper_restore.eve
 ### 1.5【ZYT】主网合约部署执行（T-1 前完成，T-0 只做应用层）
 
 > 纪律：主网部署**不可回滚**。执行前确认阶段 0 的 Go 结论 + 钱包准备完成；执行中每步【确认】后才进下一步。
+> **两种模式（附录 E 两级策略）**：**模式 A 试运行版**（TestUSDT，本次执行，owner 留 W1，不移交）｜ **模式 B 正式版**（真实 USDT + 全新上线部署钱包 + owner 移交 W2）。二者为两套独立合约，不可混用。
 
-#### 1.5.1 部署环境变量（deploy.js 读取，缺一不可）
+#### 1.5.1 部署环境变量与命令（deploy.js 读取）
+
+**模式 A：试运行版（TestUSDT，2026-09-14 本次执行）**
 
 ```bash
 $ cd F:/zyt/zyt-contracts
-# 推荐方式：交互确认（打印 chainId 与 deployer，人工输 yes 才发交易）
-$ MARKET_ADDRESS=<W3 营销 Safe> \
-  TECHNICAL_ADDRESS=<W4 技术 Safe> \
-  KEEPER_ADDRESS=<W5 keeper 签名钱包> \
+$ USDT_MOCK=1 npx hardhat run scripts/deploy.js --network bsc
+#   MARKET_ADDRESS / TECHNICAL_ADDRESS / KEEPER_ADDRESS 已在 .env 中：
+#     营销 Safe 0x1bc03Fe18F9BabBc32f0B4046E13e387E9D16786
+#     技术 Safe 0x860D4704d6eee98Aa55A971Caf8BAA4134E8eec3
+#     keeper   0x09BeD12b5956E1E53668Aa10E242766E3aE3B641
+#   WHITELIST 留空（部署后另行加白，见附录 D）
+#   交互确认会打印 chainId 56 与 deployer，输 yes 才发交易
+```
+- 费用：仅消耗真实 BNB（gas）；USDT 由 faucet 自动发 5 万 TestUSDT
+- owner：留测试部署钱包 W1 `0xB7233A…79F9`，**不移交多签**（便于试运行期调参与加白）
+- 输出需额外记录：**TestUSDT 合约地址**（前端 `BSC_MAINNET.usdt` 与 verify 都要用）
+
+**模式 B：正式版（真实 USDT，试运行通过后执行）**
+
+```bash
+$ MARKET_ADDRESS=0x1bc03Fe18F9BabBc32f0B4046E13e387E9D16786 \
+  TECHNICAL_ADDRESS=0x860D4704d6eee98Aa55A971Caf8BAA4134E8eec3 \
+  KEEPER_ADDRESS=0x09BeD12b5956E1E53668Aa10E242766E3aE3B641 \
   WHITELIST=<首批白名单地址,逗号分隔> \
   npx hardhat run scripts/deploy.js --network bsc
-
-# 脚本化方式（跳过交互确认，仅限已完整演练后使用）
-$ CONFIRM_MAINNET=1 <同上四个变量> npm run deploy:mainnet
+# 脚本化：CONFIRM_MAINNET=1 前缀可跳过交互确认（仅限已完整演练后）
 ```
+- 前置：**全新上线部署钱包**（不沿用 W1）+ 2.1 万真实 USDT + ≥0.05 BNB
+- 部署后：owner 移交 W2 `0xa67E65FA6daa80eFFEE911E042C0f5b0C8718C33`（见 1.5.5）
 
-⚠️ 部署私钥存放在本地 `zyt-contracts/.env` 的 `PRIVATE_KEY`（不在服务器；规范见 `docs/主网密钥管理清单.md`）；部署前确认 deployer 已充 ≥0.05 BNB（gas）与 2.1 万 USDT（底池 initialize）；部署完成后立即清除或换回测试私钥。
+⚠️ **路径锁定（附录 E）**：试运行版与正式版是两套独立合约，不可在同合约上切换 usdt 地址（假币换真币口子）；试运行数据作废，正式版干净起步。
+⚠️ 部署私钥规范见 `docs/主网密钥管理清单.md`（本地 `.env` 明文方案 + 三不原则）；部署完成后立即清除或换回测试私钥。
 
 | 变量 | 作用 | 缺省行为（**主网禁止依赖缺省**） |
 |---|---|---|
@@ -356,11 +425,69 @@ $ CONFIRM_MAINNET=1 <同上四个变量> npm run deploy:mainnet
 | `USDT_MAINNET` | 官方 USDT | 默认 `0x55d3…7955`，核对即可 |
 | `ROUTER_MAINNET` | PancakeRouter | 默认 `0x10ED…024E`，核对即可 |
 | `USDT_MOCK` | **绝对不可设 1** | 设 1 会用 MockUSDT，资产无效 |
+| `GST_RESERVE` | GST 释放储备池地址（LP 补充来源） | 缺省 = deployer；主网建议填 W2 治理多签 |
+| `PAIR_ADDRESS` | ZYT/GST 交易对地址 | 缺省空；手动建池完成后回填并重跑，或由多签 setPair |
 
 **【确认】** 启动日志回显 network = bsc(56)、deployer 地址、四个地址参数；出块确认前人工二次核对参数
 
+#### 1.5.1b【ZYT】初始建池与 Creator 接线（手动步骤，不可省略）
+
+> 底池创建的原料来自初始 LP。初始 LP 必须手动建立，合约不提供建池函数，避免部署脚本持有大额资产。
+
+**步骤 1：手动建立 ZYT/GST 池**
+
+在 PancakeSwap 连接部署钱包添加流动性：
+
+| 侧 | 数量 | 价值 |
+|---|---|---|
+| GST | 21,000 枚 | 21,000 U |
+| ZYT | 2,100,000,000 枚 | 21,000 U |
+
+比例必须为 1 GST 对 100,000 ZYT，与记账价一致。偏差会导致后续 `addLiquidity` 按错比例退回。
+
+**【确认】** 记录生成的 pair 地址（LP Token 合约地址）
+
+**步骤 2：把 pair 接线到合约（四项，缺一不可）**
+
+合约已部署的情况下用多签执行下列四项。
+
+| 动作 | 目标合约 | 作用 |
+|---|---|---|
+| `zyt.setWhiteList(pair, true)` | ZYTToken | pair 接收 ZYT 时豁免强制卖出初始化 |
+| `zyt.setWhiteList(router, true)` | ZYTToken | Router 经 transferFrom 拉取 ZYT，不豁免会被当作收币用户登记进 userList |
+| `gst.setTransferAllowed(pair, true)` | GSTToken | pair 接收 GST（Creator 注入 LP）。不漏则 `addLiquidity` 直接 revert |
+| `creator.setPair(pair)` | ZYTLiquidityCreator | 底池创建的目标交易对 |
+
+若建池在部署之前完成，可在首次部署时直接传 `PAIR_ADDRESS=<pair>`，脚本会自动完成上述四项。
+
+**【确认】** `zyt.isWhiteList(pair)` 与 `zyt.isWhiteList(router)` 均为 true，`gst.transferAllowed(pair)` 为 true，`creator.pair()` 等于 pair 地址
+
+**步骤 2b：GST 储备池出口接线（P1-11，漏了 Creator 取不到 GST）**
+
+| 动作 | 目标合约 | 作用 |
+|---|---|---|
+| `gst.setCreator(<ZYTLiquidityCreator>)` | GSTToken | 把储备池的唯一出口限定为 Creator，使「1:1 挂钩释放」在链上被强制 |
+
+部署脚本在第 14 段已自动执行本项。手动建池或 Creator 重新部署时需重做，并同步 `creator.setReserve(<储备池地址>)`。
+
+**【确认】** `gst.creator()` 与 `creator` 合约地址一致；`gst.reserve()` 与 `creator.gstReserve()` 一致（两者不一致会导致 Creator 取不到 GST，入金直接 revert）
+
+**步骤 3：验收首笔入金**
+
+用小额真实入金跑一次，逐项确认：
+
+| 检查项 | 预期 |
+|---|---|
+| `creator.totalLiquidityCreated()` | 大于 0 |
+| `zyt.balanceOf(0x…dEaD)` | 增加（LP Token 已锁） |
+| `pool.poolUSDT()` | 增加入金额的 60% |
+| `gst.balanceOf(reserve)` | 减少入金额的等值枚数 |
+| `zyt.getUserCount()` | 不因 Router 或 Creator 而增加 |
+| `mining.userInfo(<入金人>)` | `depositTotal` 增加，`withdrawTotal` 不变（入金不发 ZYT） |
+| `pool.daySoldGST()` | 保持 0（P1-10：入金不写当日卖出量，滑点维持基准档） |
+
 #### 1.5.2 部署产物归档
-- 记录：9 合约地址、部署 tx hash、区块高度（作为 keeper `START_BLOCK`）、构造参数、gas 消耗
+- 记录：9 合约地址、**TestUSDT 地址（模式 A）**、部署 tx hash、区块高度（作为 keeper `START_BLOCK`）、构造参数、gas 消耗
 - **【确认】** 写入《主网待填参数总表》A/B/C 三表；artifacts 冷备
 
 #### 1.5.3 字节码核对与源码验证
@@ -373,15 +500,18 @@ $ npx hardhat run scripts/verify-all-mainnet.js --network bsc   # 脚本已就�
 #### 1.5.4 参数核对（见 1.3.3）
 **【确认】** owner / marketAddress / technicalAddress / keeperAddress / buyWhitelistEnabled / stage 阈值 / 滑点档位 / 白名单逐项一致
 
-#### 1.5.5 owner 移交 W2 治理多签
+#### 1.5.5 owner 移交 W2 治理多签（正式版必做；试运行版跳过）
+
+> **试运行版（TestUSDT）不移交**：owner 留测试部署钱包 W1，方便单人快速调参与加白。移交动作在正式版部署后执行，见附录 E.3。
+
 ```bash
-# hardhat console 内（先确保 .env RPC 指向主网、使用部署私钥）
+# hardhat console 内（先确保 .env RPC 指向主网、使用上线部署钱包私钥）
 #   const cfg = await ethers.getContractAt("ZYTConfig", "<ZYTConfig地址>")
-#   await (await cfg.transferOwnership("<W2 地址>")).wait()
-#   await cfg.owner()     # 期望 == W2
+#   await (await cfg.transferOwnership("0xa67E65FA6daa80eFFEE911E042C0f5b0C8718C33")).wait()
+#   await cfg.owner()     # 期望 == 0xa67E65FA6daa80eFFEE911E042C0f5b0C8718C33
 ```
-**【确认】** `config.owner() == W2`；deployer 已无管理权限（尝试 setUint 应 revert）；移交 tx 归档
-**后续所有参数/白名单变更均走 W2 多签提案-签名-执行**
+**【确认】** `config.owner() == W2 治理多签`；原部署钱包已无管理权限（尝试 `setUint` 应 revert）；移交 tx 归档
+**移交后所有参数/白名单变更均走 W2 多签提案 → 2 人签名 → 执行（SOP 见附录 D）**
 
 #### 1.5.6 建池与底池注入
 - 建 GST/USDT 池（约 2.1 万 U 等值）→ 注入底池 → **LP 100% 打黑洞**（公示销毁哈希）
@@ -392,7 +522,7 @@ $ npx hardhat run scripts/verify-all-mainnet.js --network bsc   # 脚本已就�
 $ cd F:/zyt/zyt-keeper
 $ node src/index.js     # 或 pm2 start src/index.js --name zyt-keeper
 ```
-**【确认】** 启动日志 `chain=56` → `indexer: ok` → `ledger: rebuild` → `keeper: start cron` → `api: start`；首日 08:00 快照成功上链（`snapshotCount` 递增、MySQL `snapshots` 落库）
+**【确认】** 启动日志 `chain=56` → `indexer: ok` → `ledger: rebuild` → `keeper: start cron` → `api: start`；首日 08:01 快照成功上链（`snapshotCount` 递增、MySQL `snapshots` 落库）
 
 #### 1.5.8 白名单放行（上线前必做）
 - 按本手册附录 D 批量加白首批用户地址（主网走 W2 多签）
@@ -430,7 +560,7 @@ $ node src/index.js        # 本地模式（正式长期运行建议挂 pm2：pm
 service: start chain=97
 indexer: ok initial sync ... lastBlock=...
 ledger: ok rebuild users=N
-keeper: start cron="0 0 * * *" tz=UTC signer=0xdFA5...
+keeper: start cron="1 0 * * *" tz=UTC signer=0x09Be...
 monitor: start / forcesell: start / api: start
 reconcile: ok ... 对账 N 用户一致
 ```
@@ -462,9 +592,9 @@ $ npx wrangler pages deploy dist --project-name=<项目名>   # Cloudflare Pages
 | # | 操作 | 验证点 |
 |---|---|---|
 | 1 | MetaMask / TP 连接 DApp | chainId=56 校验通过，地址正确显示 |
-| 2 | USDT approve + 入金（如 10U） | ZYT 到账数量 = 入金 ÷ 快照价；算力 +10；动态额度 +50 |
-| 3 | 产出 claim | ZYT 到账，动态额度已用值同步增加 |
-| 4 | 分红领取 | 按算力比例分红到账 |
+| 2 | USDT approve + 入金（如 10U） | 算力 +10；入金不发 ZYT（阶段 1 手中无币）；`pool.daySoldGST()` 保持 0 |
+| 3 | 产出 claim | 已停用（2026-09-23）：`claimReward` 应 revert `Mining: reward disabled` |
+| 4 | 分红提取 | 次日可提取前一日分红；`dividendOf(地址)` 的 pending 增加，提取后清零（三阶段均可，阶段 1 亦可） |
 | 5 | 卖出（如 100 万 ZYT） | USDT 到账与滑点档位一致；GST 池减少；`/stats` slippage 变化 |
 | 6 | 转账 100 ZYT 给测试地址 | 对方收 90（10% 税），强制卖出追踪窗口数据更新 |
 | 7 | 全链路后查 `/stats` | pool 三项数值与 bscscan 读数一致 |
@@ -494,7 +624,7 @@ $ pm2 logs --lines 100 --err      # 或本地 tee 的日志文件
 ```bash
 $ pm2 status                                   # ① keeper 进程 online
 $ curl -s http://127.0.0.1:8080/health         # ② {"ok":true}
-$ pm2 logs zyt-keeper --lines 30 --nostream    # ③ 昨晚 08:00 快照日志含 "keeper: ok snapshot day=N"
+$ pm2 logs zyt-keeper --lines 30 --nostream    # ③ 昨晚 08:01 快照日志含 "keeper: ok snapshot day=N"
 $ curl -s http://127.0.0.1:8080/stats | grep -o '"diff[^,]*'   # ④ 对账 0 差异（或查 reconcile_results 表）
 $ mysqldump ... > daily_$(date +%Y%m%d).sql    # ⑤ 当日备份 + 核对文件大小
 ```
@@ -751,17 +881,20 @@ await pool.setBuyWhitelistBatch(addrs, true);
 
 | 钱包 | 试运行版 | 正式版 | 安保要求 |
 | -- | -- | -- | -- |
-| **测试部署钱包** | owner（部署 TestUSDT 版） | 弃用 | 低：独立 EOA、无真实资金，仍须防泄漏（主网地址公开，泄漏仅影响测试合约） |
-| **上线部署钱包** | 不出现 | owner（部署正式版） | 高：keystore 加固 / 离线签名，按《docs/主网密钥管理清单.md》执行（gen-deployer-keystore.mjs） |
-| keeper 签名钱包 | 0xdFA5 触发快照 | 同一私钥复用，对新合约重新接线 | 中：仅触发器无资金权限 |
-| 营销 / 技术 Safe | 可先用 EOA 代理 | 正式版必须 W3/W4 Safe（MARKET_ADDRESS / TECHNICAL_ADDRESS 传入） | 多签 |
+| **测试部署钱包 W1** | owner（部署 TestUSDT 版）`0xB7233A003C37Beb100C4eFCF82793D24B90179F9` | 弃用 | 低：独立 EOA、无真实资金，仍须防泄漏（主网地址公开，泄漏仅影响测试合约） |
+| **上线部署钱包** | 不出现 | owner（部署正式版），部署后移交 W2 | 高：按《docs/主网密钥管理清单.md》执行 |
+| **治理多签 W2** | 不参与（试运行 owner 留 W1） | owner（`transferOwnership` 目标）`0xa67E65FA6daa80eFFEE911E042C0f5b0C8718C33`（2/3 ✓ 已核验） | 多签 |
+| keeper 签名钱包 | `0x09BeD12b5956E1E53668Aa10E242766E3aE3B641` 触发快照 | 同一私钥复用，对新合约重新接线 | 中：仅触发器无资金权限 |
+| 营销 / 技术 Safe | 营销 `0x1bc03F…6786`（2/3）、技术 `0x860D47…eec3`（2/2），可直接用于试运行版 | 正式版必须 W3/W4 Safe（MARKET_ADDRESS / TECHNICAL_ADDRESS 传入） | 多签 |
+
+> 修正记录（2026-09-14）：本表原记 keeper 签名钱包为 `0xdFA5…480`，该值对应 testnet 第六套链上配置；主网 keeper 钱包已定案为 `0x09BeD12b5956E1E53668Aa10E242766E3aE3B641`（由 `zyt-keeper/.env` 私钥推导并核对一致）。
 
 - **钱包体系一次搭建两版通用**（EOA 私钥与合约地址解耦），重部署只同步配置：新合约接线（setConfig/keeperAddress/setKeeper/白名单）+ keeper .env 换址 + 前端 config 换址
 - 试运行版 owner（测试部署钱包）与正式版 owner（上线部署钱包）不同属**预期行为**，正式版上线核对时确认 owner = 上线部署钱包地址
 
 ### E.3 试运行 → 正式版切换清单（SOP 摘要）
 
-1. 试运行版全流程回归通过（含 08:00 快照连续、强制卖出窗口、前端全功能）
+1. 试运行版全流程回归通过（含 08:01 快照连续、强制卖出窗口、前端全功能）
 2. 生成/加固上线部署钱包（keystore），冷环境保管助记词
 3. 正式版部署：上线部署钱包执行 `USDT_MAINNET=<真实USDT> MARKET_ADDRESS=<W3> TECHNICAL_ADDRESS=<W4> CONFIRM_MAINNET=1 node scripts/deploy.js --network bscMainnet`
 4. bscscan verify 全部合约（含真实 USDT 地址核对）

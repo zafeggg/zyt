@@ -41,10 +41,8 @@ async function main() {
   await (await deflation.dailySnapshot(ethers.parseEther("600"))).wait();
   console.log("snapshot done");
 
-  // alice 领取当日产出
-  const day = BigInt(Math.floor(Date.now() / 1000 / 86400));
-  await (await mining.connect(alice).claimReward(day)).wait();
-  console.log("claim done");
+  // 每日产出已停用（2026-09-23）：不再调用 claimReward，收益只走 claimDividend
+  console.log("reward disabled (skipped)");
 
   // bob 卖出部分 ZYT
   const bobZyt = await zyt.balanceOf(bob.address);

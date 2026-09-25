@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- ZYT 众赢币品牌标 v1：金币底（方案 A）+ 几何"众"字（方案 B），三"人"同形寓意众赢 -->
+  <defs>
+    <radialGradient id="coin" cx="0.35" cy="0.3" r="0.95">
+      <stop offset="0%" stop-color="#ffedb0"/>
+      <stop offset="55%" stop-color="#f5c15d"/>
+      <stop offset="100%" stop-color="#d19a2f"/>
+    </radialGradient>
+  </defs>
+
+  <!-- 金币底 -->
+  <circle cx="256" cy="256" r="248" fill="url(#coin)"/>
+  <circle cx="256" cy="256" r="246" fill="none" stroke="#8a6a1e" stroke-width="8"/>
+  <circle cx="256" cy="256" r="220" fill="none" stroke="#b8860b" stroke-width="5" opacity="0.85"/>
+
+  <!-- 顶部高光弧 -->
+  <path d="M 96 130 A 200 200 0 0 1 416 130" fill="none" stroke="#fff6d8" stroke-width="26" stroke-linecap="round" opacity="0.35"/>
+
+  <!-- 几何"众"字：上"人" + 左下"人" + 右下"人"（粗笔画，无字体依赖） -->
+  <g stroke="#4a3608" stroke-width="46" stroke-linecap="round" stroke-linejoin="round" fill="none">
+    <!-- 上"人" -->
+    <path d="M 256 122 L 152 262"/>
+    <path d="M 256 122 L 360 262"/>
+    <!-- 左下"人" -->
+    <path d="M 192 300 L 120 400"/>
+    <path d="M 192 300 L 264 400"/>
+    <!-- 右下"人" -->
+    <path d="M 320 300 L 248 400"/>
+    <path d="M 320 300 L 392 400"/>
+  </g>
+</svg>

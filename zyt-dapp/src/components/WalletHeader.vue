@@ -5,7 +5,7 @@
         <img class="brand-icon" src="/favicon.svg" alt="ZYT" />
         {{ $t("home.title") }}
       </div>
-      <div class="sub">GST · ZYT</div>
+      <div class="sub">USDT · ZYT</div>
     </div>
     <div class="right">
       <van-dropdown-menu class="lang-menu" active-color="#f5c15d">

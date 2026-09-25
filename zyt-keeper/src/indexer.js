@@ -28,13 +28,44 @@ export class Indexer {
     const INSERT_SQL =
       "INSERT OR IGNORE INTO events (chain_id, block, tx_hash, log_index, name, from_addr, to_addr, amount, extra, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)";
 
+    // v16：按地址聚合订阅，一次 getLogs 拉全部合约地址
+    // 原因：原先对每个合约地址单独请求（4 个地址 = 4 次/批），公共节点在首次全量同步时高频调用会触发 429 限速
+    const addrMap = new Map();
+    for (const sub of SUBSCRIBED) {
+      const addr = CONFIG.contracts[sub.addrKey];
+      if (!addr) continue;
+      const k = addr.toLowerCase();
+      if (!addrMap.has(k)) addrMap.set(k, []);
+      addrMap.get(k).push(sub);
+    }
+    const addrList = [...addrMap.keys()];
+    if (addrList.length === 0) return 0;
+
     while (from <= latest) {
       const to = Math.min(from + range - 1, latest);
-      for (const sub of SUBSCRIBED) {
-        const addr = CONFIG.contracts[sub.addrKey];
-        if (!addr) continue;
-        const logs = await this.provider.getLogs({ address: addr, fromBlock: from, toBlock: to });
-        for (const log of logs) {
+      let logs;
+      try {
+        logs = await this.provider.getLogs({ address: addrList, fromBlock: from, toBlock: to });
+      } catch (e) {
+        // 2026-09-25：公共 RPC（publicnode / 官方 data-seed）对老区块 getLogs 剪枝（-32701
+        // "History has been pruned"）。原实现在此整轮抛错 → 游标停滞、后续所有事件持续漏抓。
+        // 自愈策略：低于安全窗口的历史区间放弃（记录 gap），直接跳到最近 SAFE_WINDOW 块继续。
+        const SAFE_WINDOW = 900; // 保留窗口（实测公共节点近 1 万块可用，900 更保守）
+        const jumpTo = latest - SAFE_WINDOW;
+        if (to < jumpTo) {
+          console.warn(
+            `[indexer] pruned history ${from}-${to}（公共 RPC 剪枝）；跳过至 ${jumpTo}，该区间事件缺失`
+          );
+          logRun("indexer", "gap", `pruned ${from}-${to} → resume ${jumpTo}`);
+          from = jumpTo;
+          continue;
+        }
+        throw e;
+      }
+      for (const log of logs) {
+        // 按日志来源地址定位对应的合约订阅（避免用错 iface 解析）
+        const subs = addrMap.get((log.address || "").toLowerCase()) || [];
+        for (const sub of subs) {
           try {
             const parsed = sub.iface.parseLog({ topics: log.topics, data: log.data });
             if (!parsed) continue;
@@ -47,6 +78,23 @@ export class Indexer {
             // 地址统一小写（链上返回 checksum 地址）
             const fromAddr = (args.user || args.from || args.receiver || "").toString().toLowerCase();
             const toAddr = (args.to || "").toString().toLowerCase();
+            // v17：金额字段候选扩展（各事件参数名不同，原实现会落库为字符串 "undefined"）
+            // v9 新增：lpBurned（LiquidityInjected）/ burned（Deflated）/ dividend（Deflated）
+            const amountVal =
+              args.amount ??
+              args.usdt ??
+              args.usdtAmount ??
+              args.usdtValue ??
+              args.usdtIn ??
+              args.reward ??
+              args.zytIn ??
+              args.usdtOut ??
+              args.liquidity ??
+              args.zytAmount ??
+              args.lpBurned ??
+              args.burned ??
+              args.dividend ??
+              "";
             await db.run(
               INSERT_SQL,
               [
@@ -57,7 +105,7 @@ export class Indexer {
                 parsed.name,
                 fromAddr,
                 toAddr,
-                args.amount !== undefined ? String(args.amount) : String(args.usdt ?? args.reward ?? args.zytIn ?? args.usdtOut ?? ""),
+                String(amountVal),
                 JSON.stringify(args, bigintSafe),
                 Math.floor(Date.now() / 1000),
               ]
@@ -75,6 +123,10 @@ export class Indexer {
         }
       }
       from = to + 1;
+      // v16：批间限速（公共 RPC 对 getLogs 有频率限制，连续请求会 429）
+      if (CONFIG.indexer.batchDelayMs > 0 && from <= latest) {
+        await new Promise((r) => setTimeout(r, CONFIG.indexer.batchDelayMs));
+      }
     }
     this.lastBlock = latest;
     return count;
@@ -83,6 +135,20 @@ export class Indexer {
   async start() {
     if (this.running) return;
     this.running = true;
+    // 2026-09-25：启动游标优先取 DB 已索引位置（MAX(block)+1）。
+    // 背景：公共 RPC 剪枝老区块，每次重启从 START_BLOCK 重扫都会大量报错并制造无效 gap 日志；
+    // 已索引过的区间无需重扫（事件表 UNIQUE 幂等，但省去无用 RPC 调用与噪音）。
+    try {
+      const db = await getDb();
+      const row = await db.get("SELECT MAX(block) AS m FROM events WHERE chain_id=?", [CONFIG.chainId]);
+      const maxBlock = row && row.m ? Number(row.m) : 0;
+      if (maxBlock > this.lastBlock) {
+        logRun("indexer", "ok", `resume cursor from DB MAX(block)=${maxBlock}（跳过 ${this.lastBlock}-${maxBlock} 重扫）`);
+        this.lastBlock = maxBlock;
+      }
+    } catch {
+      /* 读游标失败则退回 START_BLOCK 全量重扫 */
+    }
     // 初始同步
     try {
       const n = await this.syncOnce();

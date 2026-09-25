@@ -1,4 +1,5 @@
-// 自动生成：contracts/ZYTToken.sol/ZYTToken.json
+// 自动生成：contracts/ZYTToken.sol
+// 由 scripts/gen-abis.mjs 生成，请勿手工编辑
 export const ZYT_ABI = [
  {
   "inputs": [
@@ -150,11 +151,37 @@ export const ZYT_ABI = [
    {
     "indexed": true,
     "internalType": "address",
+    "name": "creator",
+    "type": "address"
+   }
+  ],
+  "name": "CreatorChanged",
+  "type": "event"
+ },
+ {
+  "anonymous": false,
+  "inputs": [
+   {
+    "indexed": true,
+    "internalType": "address",
     "name": "forceSell",
     "type": "address"
    }
   ],
   "name": "ForceSellChanged",
+  "type": "event"
+ },
+ {
+  "anonymous": false,
+  "inputs": [
+   {
+    "indexed": true,
+    "internalType": "address",
+    "name": "ledger",
+    "type": "address"
+   }
+  ],
+  "name": "LedgerChanged",
   "type": "event"
  },
  {
@@ -187,6 +214,19 @@ export const ZYT_ABI = [
    }
   ],
   "name": "OwnershipTransferred",
+  "type": "event"
+ },
+ {
+  "anonymous": false,
+  "inputs": [
+   {
+    "indexed": true,
+    "internalType": "address",
+    "name": "pair",
+    "type": "address"
+   }
+  ],
+  "name": "PairChanged",
   "type": "event"
  },
  {
@@ -371,6 +411,32 @@ export const ZYT_ABI = [
  },
  {
   "inputs": [],
+  "name": "configAddr",
+  "outputs": [
+   {
+    "internalType": "address",
+    "name": "",
+    "type": "address"
+   }
+  ],
+  "stateMutability": "view",
+  "type": "function"
+ },
+ {
+  "inputs": [],
+  "name": "creator",
+  "outputs": [
+   {
+    "internalType": "address",
+    "name": "",
+    "type": "address"
+   }
+  ],
+  "stateMutability": "view",
+  "type": "function"
+ },
+ {
+  "inputs": [],
   "name": "decimals",
   "outputs": [
    {
@@ -491,6 +557,19 @@ export const ZYT_ABI = [
   "type": "function"
  },
  {
+  "inputs": [],
+  "name": "ledger",
+  "outputs": [
+   {
+    "internalType": "address",
+    "name": "",
+    "type": "address"
+   }
+  ],
+  "stateMutability": "view",
+  "type": "function"
+ },
+ {
   "inputs": [
    {
     "internalType": "address",
@@ -537,6 +616,19 @@ export const ZYT_ABI = [
  {
   "inputs": [],
   "name": "owner",
+  "outputs": [
+   {
+    "internalType": "address",
+    "name": "",
+    "type": "address"
+   }
+  ],
+  "stateMutability": "view",
+  "type": "function"
+ },
+ {
+  "inputs": [],
+  "name": "pairAddress",
   "outputs": [
    {
     "internalType": "address",
@@ -633,6 +725,32 @@ export const ZYT_ABI = [
   "inputs": [
    {
     "internalType": "address",
+    "name": "_config",
+    "type": "address"
+   }
+  ],
+  "name": "setConfig",
+  "outputs": [],
+  "stateMutability": "nonpayable",
+  "type": "function"
+ },
+ {
+  "inputs": [
+   {
+    "internalType": "address",
+    "name": "_creator",
+    "type": "address"
+   }
+  ],
+  "name": "setCreator",
+  "outputs": [],
+  "stateMutability": "nonpayable",
+  "type": "function"
+ },
+ {
+  "inputs": [
+   {
+    "internalType": "address",
     "name": "_forceSell",
     "type": "address"
    }
@@ -646,11 +764,37 @@ export const ZYT_ABI = [
   "inputs": [
    {
     "internalType": "address",
+    "name": "_ledger",
+    "type": "address"
+   }
+  ],
+  "name": "setLedger",
+  "outputs": [],
+  "stateMutability": "nonpayable",
+  "type": "function"
+ },
+ {
+  "inputs": [
+   {
+    "internalType": "address",
     "name": "_minter",
     "type": "address"
    }
   ],
   "name": "setMinter",
+  "outputs": [],
+  "stateMutability": "nonpayable",
+  "type": "function"
+ },
+ {
+  "inputs": [
+   {
+    "internalType": "address",
+    "name": "_pair",
+    "type": "address"
+   }
+  ],
+  "name": "setPair",
   "outputs": [],
   "stateMutability": "nonpayable",
   "type": "function"
@@ -816,4 +960,4 @@ export const ZYT_ABI = [
   "stateMutability": "view",
   "type": "function"
  }
-] as const;
+];

@@ -1,4 +1,5 @@
-// 自动生成：contracts/ZYTMining.sol/ZYTMining.json
+// 自动生成：contracts/ZYTMining.sol
+// 由 scripts/gen-abis.mjs 生成，请勿手工编辑
 export const MINING_ABI = [
  {
   "inputs": [
@@ -48,22 +49,28 @@ export const MINING_ABI = [
    {
     "indexed": false,
     "internalType": "uint256",
-    "name": "reward",
+    "name": "usdtIn",
     "type": "uint256"
    },
    {
     "indexed": false,
     "internalType": "uint256",
-    "name": "day",
+    "name": "zytOut",
     "type": "uint256"
    }
   ],
-  "name": "Claimed",
+  "name": "Bought",
   "type": "event"
  },
  {
   "anonymous": false,
   "inputs": [
+   {
+    "indexed": true,
+    "internalType": "address",
+    "name": "user",
+    "type": "address"
+   },
    {
     "indexed": false,
     "internalType": "uint256",
@@ -71,7 +78,7 @@ export const MINING_ABI = [
     "type": "uint256"
    }
   ],
-  "name": "DailyReleaseAmountSet",
+  "name": "Claimed",
   "type": "event"
  },
  {
@@ -87,12 +94,6 @@ export const MINING_ABI = [
     "indexed": false,
     "internalType": "uint256",
     "name": "totalPower",
-    "type": "uint256"
-   },
-   {
-    "indexed": false,
-    "internalType": "uint256",
-    "name": "releaseAmount",
     "type": "uint256"
    }
   ],
@@ -112,12 +113,6 @@ export const MINING_ABI = [
     "indexed": false,
     "internalType": "uint256",
     "name": "usdt",
-    "type": "uint256"
-   },
-   {
-    "indexed": false,
-    "internalType": "uint256",
-    "name": "zytMinted",
     "type": "uint256"
    },
    {
@@ -154,11 +149,36 @@ export const MINING_ABI = [
    {
     "indexed": false,
     "internalType": "uint256",
-    "name": "usdt",
+    "name": "amount",
+    "type": "uint256"
+   },
+   {
+    "indexed": false,
+    "internalType": "uint256",
+    "name": "fromDay",
+    "type": "uint256"
+   },
+   {
+    "indexed": false,
+    "internalType": "uint256",
+    "name": "toDay",
     "type": "uint256"
    }
   ],
-  "name": "LiquidityAdded",
+  "name": "DividendSettled",
+  "type": "event"
+ },
+ {
+  "anonymous": false,
+  "inputs": [
+   {
+    "indexed": true,
+    "internalType": "address",
+    "name": "user",
+    "type": "address"
+   }
+  ],
+  "name": "DynamicExited",
   "type": "event"
  },
  {
@@ -173,7 +193,7 @@ export const MINING_ABI = [
    {
     "indexed": false,
     "internalType": "uint256",
-    "name": "reward",
+    "name": "usdtAmount",
     "type": "uint256"
    },
    {
@@ -183,7 +203,7 @@ export const MINING_ABI = [
     "type": "uint256"
    }
   ],
-  "name": "RefReward",
+  "name": "RefPaid",
   "type": "event"
  },
  {
@@ -206,6 +226,12 @@ export const MINING_ABI = [
     "internalType": "uint256",
     "name": "usdtOut",
     "type": "uint256"
+   },
+   {
+    "indexed": false,
+    "internalType": "uint256",
+    "name": "rate",
+    "type": "uint256"
    }
   ],
   "name": "Sold",
@@ -225,35 +251,78 @@ export const MINING_ABI = [
   "type": "event"
  },
  {
+  "anonymous": false,
   "inputs": [
    {
+    "indexed": true,
+    "internalType": "address",
+    "name": "user",
+    "type": "address"
+   },
+   {
+    "indexed": false,
     "internalType": "uint256",
-    "name": "usdtAmount",
+    "name": "zytAmount",
+    "type": "uint256"
+   },
+   {
+    "indexed": false,
+    "internalType": "uint256",
+    "name": "usdtValue",
+    "type": "uint256"
+   },
+   {
+    "indexed": false,
+    "internalType": "bool",
+    "name": "isOut",
+    "type": "bool"
+   }
+  ],
+  "name": "TransferLedger",
+  "type": "event"
+ },
+ {
+  "inputs": [],
+  "name": "MAX_SETTLE_DAYS",
+  "outputs": [
+   {
+    "internalType": "uint256",
+    "name": "",
     "type": "uint256"
    }
   ],
-  "name": "addLiquidity",
-  "outputs": [],
+  "stateMutability": "view",
+  "type": "function"
+ },
+ {
+  "inputs": [
+   {
+    "internalType": "uint256",
+    "name": "usdtIn",
+    "type": "uint256"
+   }
+  ],
+  "name": "buy",
+  "outputs": [
+   {
+    "internalType": "uint256",
+    "name": "zytOut",
+    "type": "uint256"
+   }
+  ],
   "stateMutability": "nonpayable",
   "type": "function"
  },
  {
   "inputs": [],
   "name": "claimDividend",
-  "outputs": [],
-  "stateMutability": "nonpayable",
-  "type": "function"
- },
- {
-  "inputs": [
+  "outputs": [
    {
     "internalType": "uint256",
-    "name": "day",
+    "name": "amount",
     "type": "uint256"
    }
   ],
-  "name": "claimReward",
-  "outputs": [],
   "stateMutability": "nonpayable",
   "type": "function"
  },
@@ -287,7 +356,7 @@ export const MINING_ABI = [
    },
    {
     "internalType": "uint256",
-    "name": "releaseAmount",
+    "name": "dividendAmount",
     "type": "uint256"
    }
   ],
@@ -310,19 +379,6 @@ export const MINING_ABI = [
   "name": "dailyRelease",
   "outputs": [],
   "stateMutability": "nonpayable",
-  "type": "function"
- },
- {
-  "inputs": [],
-  "name": "dailyReleaseAmount",
-  "outputs": [
-   {
-    "internalType": "uint256",
-    "name": "",
-    "type": "uint256"
-   }
-  ],
-  "stateMutability": "view",
   "type": "function"
  },
  {
@@ -359,17 +415,41 @@ export const MINING_ABI = [
  {
   "inputs": [
    {
+    "internalType": "address",
+    "name": "",
+    "type": "address"
+   }
+  ],
+  "name": "dividendClaimedDay",
+  "outputs": [
+   {
     "internalType": "uint256",
     "name": "",
     "type": "uint256"
    }
   ],
-  "name": "dividendClaimed",
+  "stateMutability": "view",
+  "type": "function"
+ },
+ {
+  "inputs": [
+   {
+    "internalType": "address",
+    "name": "user",
+    "type": "address"
+   }
+  ],
+  "name": "dividendOf",
   "outputs": [
    {
-    "internalType": "bool",
-    "name": "",
-    "type": "bool"
+    "internalType": "uint256",
+    "name": "pending",
+    "type": "uint256"
+   },
+   {
+    "internalType": "uint256",
+    "name": "settledDay",
+    "type": "uint256"
    }
   ],
   "stateMutability": "view",
@@ -408,6 +488,60 @@ export const MINING_ABI = [
   "type": "function"
  },
  {
+  "inputs": [
+   {
+    "internalType": "uint256",
+    "name": "day",
+    "type": "uint256"
+   },
+   {
+    "internalType": "uint256",
+    "name": "amount",
+    "type": "uint256"
+   }
+  ],
+  "name": "recordDailyDividend",
+  "outputs": [],
+  "stateMutability": "nonpayable",
+  "type": "function"
+ },
+ {
+  "inputs": [
+   {
+    "internalType": "address",
+    "name": "user",
+    "type": "address"
+   },
+   {
+    "internalType": "uint256",
+    "name": "zytAmount",
+    "type": "uint256"
+   }
+  ],
+  "name": "recordTransferIn",
+  "outputs": [],
+  "stateMutability": "nonpayable",
+  "type": "function"
+ },
+ {
+  "inputs": [
+   {
+    "internalType": "address",
+    "name": "user",
+    "type": "address"
+   },
+   {
+    "internalType": "uint256",
+    "name": "zytAmount",
+    "type": "uint256"
+   }
+  ],
+  "name": "recordTransferOut",
+  "outputs": [],
+  "stateMutability": "nonpayable",
+  "type": "function"
+ },
+ {
   "inputs": [],
   "name": "referral",
   "outputs": [
@@ -436,19 +570,6 @@ export const MINING_ABI = [
  {
   "inputs": [
    {
-    "internalType": "uint256",
-    "name": "amount",
-    "type": "uint256"
-   }
-  ],
-  "name": "setDailyReleaseAmount",
-  "outputs": [],
-  "stateMutability": "nonpayable",
-  "type": "function"
- },
- {
-  "inputs": [
-   {
     "internalType": "address",
     "name": "_deflation",
     "type": "address"
@@ -457,6 +578,30 @@ export const MINING_ABI = [
   "name": "setDeflation",
   "outputs": [],
   "stateMutability": "nonpayable",
+  "type": "function"
+ },
+ {
+  "inputs": [
+   {
+    "internalType": "address",
+    "name": "user",
+    "type": "address"
+   }
+  ],
+  "name": "transferValueOf",
+  "outputs": [
+   {
+    "internalType": "uint256",
+    "name": "receivedValue",
+    "type": "uint256"
+   },
+   {
+    "internalType": "uint256",
+    "name": "withdrawCap",
+    "type": "uint256"
+   }
+  ],
+  "stateMutability": "view",
   "type": "function"
  },
  {
@@ -494,6 +639,11 @@ export const MINING_ABI = [
    },
    {
     "internalType": "uint256",
+    "name": "power",
+    "type": "uint256"
+   },
+   {
+    "internalType": "uint256",
     "name": "dynamicQuota",
     "type": "uint256"
    },
@@ -504,17 +654,17 @@ export const MINING_ABI = [
    },
    {
     "internalType": "uint256",
-    "name": "power",
-    "type": "uint256"
-   },
-   {
-    "internalType": "uint256",
-    "name": "lpQuota",
+    "name": "buyQuotaLeft",
     "type": "uint256"
    },
    {
     "internalType": "bool",
-    "name": "isExited",
+    "name": "staticExited",
+    "type": "bool"
+   },
+   {
+    "internalType": "bool",
+    "name": "dynamicExited",
     "type": "bool"
    }
   ],
@@ -543,16 +693,6 @@ export const MINING_ABI = [
    },
    {
     "internalType": "uint256",
-    "name": "dynamicQuota",
-    "type": "uint256"
-   },
-   {
-    "internalType": "uint256",
-    "name": "dynamicWithdrawn",
-    "type": "uint256"
-   },
-   {
-    "internalType": "uint256",
     "name": "powerBase",
     "type": "uint256"
    },
@@ -563,17 +703,47 @@ export const MINING_ABI = [
    },
    {
     "internalType": "uint256",
-    "name": "lpQuota",
-    "type": "uint256"
-   },
-   {
-    "internalType": "uint256",
     "name": "pendingDividend",
     "type": "uint256"
    },
    {
     "internalType": "bool",
     "name": "isExited",
+    "type": "bool"
+   },
+   {
+    "internalType": "uint256",
+    "name": "receivedValue",
+    "type": "uint256"
+   },
+   {
+    "internalType": "uint256",
+    "name": "exitDay",
+    "type": "uint256"
+   },
+   {
+    "internalType": "uint256",
+    "name": "buyQuota",
+    "type": "uint256"
+   },
+   {
+    "internalType": "uint256",
+    "name": "buyUsed",
+    "type": "uint256"
+   },
+   {
+    "internalType": "uint256",
+    "name": "dynamicQuota",
+    "type": "uint256"
+   },
+   {
+    "internalType": "uint256",
+    "name": "dynamicWithdrawn",
+    "type": "uint256"
+   },
+   {
+    "internalType": "bool",
+    "name": "dynamicExited",
     "type": "bool"
    }
   ],
@@ -593,4 +763,4 @@ export const MINING_ABI = [
   "stateMutability": "view",
   "type": "function"
  }
-] as const;
+];

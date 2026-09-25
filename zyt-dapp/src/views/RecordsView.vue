@@ -83,13 +83,19 @@ const rows = ref<Row[]>([]);
 /** 链上事件名 → 本地类型（模糊匹配 abis 事件名） */
 function mapEventName(name: string): TxType | string {
   const n = name.toLowerCase();
+  // v17：底池创建（BasePoolFunded 归属用户；BasePoolCreated 由合约触发，不进入用户记录）
+  if (n.includes("basepool")) return "basePool";
+  if (n.includes("bought")) return "buy";
+  if (n.includes("convert")) return "convert";
+  if (n.includes("refpaid")) return "refPaid";
   if (n.includes("liquid")) return "addLiquidity";
   if (n.includes("approv")) return "approve";
   if (n.includes("deposit")) return "deposit";
   if (n.includes("sell") || n.includes("sold")) return "sell";
-  if (n.includes("reward")) return "reward";
+  if (n.includes("reward")) return "refReward";
   if (n.includes("dividend")) return "dividend";
   if (n.includes("refer")) return "refReward";
+  if (n.includes("claim")) return "reward";
   if (n.includes("transfer")) return "transfer";
   return name;
 }
@@ -108,9 +114,16 @@ async function loadRecords() {
     const evs = await api.records(address.value);
     // v15：本地与链上按 txHash 去重（同操作保留本地格式化版本）
     const localHashes = new Set(local.map((r) => r.hash?.toLowerCase()).filter(Boolean));
+    const seen = new Set<string>();
     const fromChain: Row[] = (evs || [])
       .map(fmtChainRecord)
-      .filter((r) => !r.hash || !localHashes.has(r.hash.toLowerCase()));
+      .filter((r) => {
+        if (!r.hash) return true;
+        const k = r.hash.toLowerCase();
+        if (seen.has(k)) return false; // 同 tx 多合约重复事件只保留一条
+        seen.add(k);
+        return !localHashes.has(k);
+      });
     rows.value = [...fromChain, ...local];
   } catch {
     loadError.value = true;
@@ -142,37 +155,101 @@ function fmtChainRecord(e: KeeperRecord): Row {
   const base = {
     type: mapEventName(e.name),
     hash: e.hash,
-    time: Number(args.time || 0) * 1000, // 仅 FirstReceive 携带 time（秒）
+    // 行时间：仅 FirstReceive 携带链上 args.time（秒）；其余事件用入库时间兜底（修复显示 --）
+    time: Number(args.time || 0) * 1000 || (e.created_at ? Number(e.created_at) * 1000 : 0),
     block: e.block,
     status: "success" as TxStatus,
     from: e.from_addr,
   };
   if (lower.includes("deposit")) {
+    // v17：入金不再铸造 ZYT（zytMinted / quota 恒为 0），展示生态奖励、底池创建与算力
+    const usdt = Number(wei(args.usdt) || 0);
     return {
       ...base,
       spend: wei(args.usdt),
-      detail: `铸造 ${num(wei(args.zytMinted) || "0")} ZYT · 算力 +${num(wei(args.power) || "0")} · 动态额度 ${num(wei(args.quota) || "0")}`,
+      receive: `${num(wei(args.power)) || "0"} ${t("home.powerUnit")}`,
+      detail: t("records.detailDeposit", {
+        reward: Math.round(usdt * 0.4),
+        pool: Math.round(usdt * 0.6),
+        power: num(wei(args.power)) || "0",
+      }),
+    };
+  }
+  if (lower.includes("basepoolfunded")) {
+    return {
+      ...base,
+      detail: t("records.detailBasePool", {
+        usdt: num(wei(args.usdtIn)) || "0",
+        lp: num(wei(args.liquidity)) || "0",
+      }),
+    };
+  }
+  if (lower.includes("bought")) {
+    return {
+      ...base,
+      spend: `${num(wei(args.usdtIn)) || "0"} USDT`,
+      receive: `${num(wei(args.zytOut)) || "0"} ZYT`,
+      detail: t("records.buyDetail", { usdt: num(wei(args.usdtIn)) || "0" }),
+    };
+  }
+  if (lower.includes("converted")) {
+    return {
+      ...base,
+      spend: `${num(wei(args.usdtValue)) || "0"} U`,
+      receive: `${num(wei(args.zytOut)) || "0"} ZYT`,
+      detail: t("records.detailConverted", { usdt: num(wei(args.usdtValue)) || "0" }),
+    };
+  }
+  if (lower.includes("refpaid")) {
+    return {
+      ...base,
+      receive: `${num(wei(args.usdtAmount)) || "0"} USDT`,
+      detail: t("records.detailRefPaid", {
+        level: num(args.level) || "?",
+        usdt: num(wei(args.usdtAmount)) || "0",
+      }),
     };
   }
   if (lower.includes("sell") || lower.includes("sold")) {
     return {
       ...base,
       spend: wei(args.zytIn),
-      detail: `获得 ${num(wei(args.usdtOut) || "0")} USDT · 滑点档位 ${Number(args.rate || 0) / 100}%`,
+      detail: t("records.detailSell", {
+        usdt: num(wei(args.usdtOut)) || "0",
+        rate: Number(args.rate || 0) / 100,
+      }),
     };
   }
   if (lower.includes("liquid")) {
-    return { ...base, spend: wei(args.usdt), detail: `获得 ${num(wei(args.usdt) || "0")} 参与额度` };
+    return {
+      ...base,
+      spend: wei(args.usdt),
+      detail: t("records.detailLiquidity", { usdt: num(wei(args.usdt)) || "0" }),
+    };
   }
   if (lower.includes("firstreceive")) {
     // FirstReceive 无金额，time 为事件参数（秒级时间戳）
-    return { ...base, detail: "强制卖出窗口启动（首收币）" };
+    return { ...base, detail: t("records.detailFirstReceive") };
   }
   if (lower.includes("reward")) {
-    return { ...base, receive: wei(args.reward), detail: `${num(args.level) || "?"} 代推荐奖励（折 ${num(wei(args.usdt) || "0")} USDT）` };
+    return {
+      ...base,
+      receive: wei(args.reward),
+      detail: t("records.detailRefReward", {
+        level: num(args.level) || "?",
+        usdt: num(wei(args.usdt)) || "0",
+      }),
+    };
   }
   if (lower.includes("claim")) {
-    return { ...base, receive: wei(args.reward), detail: `第 ${num(args.day) || "?"} 日产出（折 ${num(wei(args.usdt) || "0")} USDT）` };
+    return {
+      ...base,
+      receive: wei(args.reward),
+      detail: t("records.detailClaim", {
+        day: num(args.day) || "?",
+        usdt: num(wei(args.usdt)) || "0",
+      }),
+    };
   }
   // 未识别事件：金额尽力转换，detail 保底原始 JSON（不丢信息）
   return {
@@ -191,6 +268,9 @@ function typeText(type: string): string {
     approve: t("records.approve"),
     addLiquidity: t("records.addLiquidity"),
     deposit: t("records.deposit"),
+    convert: t("records.convert"),
+    basePool: t("records.basePool"),
+    refPaid: t("records.refPaid"),
     sell: t("records.sell"),
     reward: t("records.reward"),
     dividend: t("records.dividend"),

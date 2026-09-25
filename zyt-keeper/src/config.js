@@ -11,13 +11,23 @@ export const CONFIG = {
     config: process.env.CONFIG_ADDR || "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512",
     zyt: process.env.ZYT_ADDR || "0xCf7Ed3AccA5a467e9e704C703E8D87F634fB0Fc9",
     forceSell: process.env.FORCESELL_ADDR || "",
+    // 2026-09-22 新增：底池创建合约（索引 BasePoolCreated，对账底池创建量）
+    // 留空则跳过订阅，不影响其他合约的事件索引
+    creator: process.env.CREATOR_ADDR || "",
+    // 2026-09-24 新增：推荐合约（索引 Bound，绑定关系入账供记录页展示）
+    referral: process.env.REFERRAL_ADDR || "",
+  },
+  // v17：对账参数。静态出局倍数与链上 ZYTConfig.staticExitMul 一致；
+  // reconcile 时若读到链上 config 合约会以链上值为准并覆盖此项。
+  params: {
+    staticExitMul: Number(process.env.STATIC_EXIT_MUL || 2),
   },
   keeper: {
-    // v7：每日 08:00 北京时间 = UTC 0 点
-    // v10 修复：node-cron 默认按「系统时区」解释 cron 表达式——本地 Windows 是 Asia/Shanghai，
+    // v7：每日 08:01 北京时间 = UTC 00:01（2026-09-16 由 08:00 调整为 08:01）
+    // v10 修复：node-cron 默认按「系统时区」解释 cron 表达式，本地 Windows 是 Asia/Shanghai，
     // 会导致触发时刻错位（北京时间 00:00 而非 08:00）。现显式指定 cron 时区为 UTC，
-    // "0 0 * * *" 严格 = UTC 00:00 = 北京 08:00，不再依赖服务器时区。
-    snapshotCron: process.env.SNAPSHOT_CRON || "0 0 * * *",
+    // "1 0 * * *" 严格 = UTC 00:01 = 北京 08:01，不再依赖服务器时区。
+    snapshotCron: process.env.SNAPSHOT_CRON || "1 0 * * *",
     snapshotCronTz: process.env.SNAPSHOT_CRON_TZ || "UTC",
     retryTimes: Number(process.env.RETRY_TIMES || 3),
     retryDelayMs: Number(process.env.RETRY_DELAY_MS || 30000),
@@ -26,7 +36,7 @@ export const CONFIG = {
     privateKey: process.env.KEEPER_PRIVATE_KEY || "",
     // 双实例互斥锁：跨进程防重复触发（方案 §6.3）
     // 生产配 REDIS_URL（SETNX 原子锁）；未配置时降级为本地文件锁（单机场景）
-    lockTtlMs: Number(process.env.KEEPER_LOCK_TTL_MS || 600000), // 10 分钟，覆盖 08:00-08:10 重试窗
+    lockTtlMs: Number(process.env.KEEPER_LOCK_TTL_MS || 600000), // 10 分钟，覆盖 08:01-08:11 重试窗
   },
   lock: {
     redisUrl: process.env.REDIS_URL || "", // 生产 Redis（如 redis://user:pass@host:6379）
@@ -35,6 +45,9 @@ export const CONFIG = {
     pollIntervalMs: Number(process.env.INDEXER_POLL_MS || 30000),
     startBlock: Number(process.env.START_BLOCK || 0),
     blockRange: Number(process.env.BLOCK_RANGE || 1000),
+    // v16：批间延迟（毫秒）。公共 RPC（blockrazor 等）对 eth_getLogs 有频率限制，
+    // 首次追块或重启后补块时连续请求会触发 429，加入间隔可稳定同步；设 0 关闭
+    batchDelayMs: Number(process.env.BATCH_DELAY_MS ?? 1200),
   },
   // 强制卖出窗口链下追踪（生产缺口 #7）：
   // 遍历链上 userList 读 firstReceiveTime/soldAmount/balance，按合约同款公式

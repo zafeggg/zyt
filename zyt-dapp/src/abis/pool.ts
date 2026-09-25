@@ -1,4 +1,5 @@
-// 自动生成：contracts/ZYTPoolManager.sol/ZYTPoolManager.json
+// 自动生成：contracts/ZYTPoolManager.sol
+// 由 scripts/gen-abis.mjs 生成，请勿手工编辑
 export const POOL_ABI = [
  {
   "inputs": [
@@ -15,11 +16,6 @@ export const POOL_ABI = [
    {
     "internalType": "address",
     "name": "usdt_",
-    "type": "address"
-   },
-   {
-    "internalType": "address",
-    "name": "gstToken_",
     "type": "address"
    }
   ],
@@ -49,8 +45,19 @@ export const POOL_ABI = [
   "type": "error"
  },
  {
+  "inputs": [],
+  "name": "ReentrancyGuardReentrantCall",
+  "type": "error"
+ },
+ {
   "anonymous": false,
   "inputs": [
+   {
+    "indexed": true,
+    "internalType": "address",
+    "name": "user",
+    "type": "address"
+   },
    {
     "indexed": false,
     "internalType": "uint256",
@@ -60,30 +67,36 @@ export const POOL_ABI = [
    {
     "indexed": false,
     "internalType": "uint256",
-    "name": "gstIn",
+    "name": "zytOut",
     "type": "uint256"
    }
   ],
-  "name": "BuyRecorded",
+  "name": "Bought",
   "type": "event"
  },
  {
   "anonymous": false,
   "inputs": [
    {
-    "indexed": true,
-    "internalType": "address",
-    "name": "addr",
-    "type": "address"
+    "indexed": false,
+    "internalType": "uint256",
+    "name": "burned",
+    "type": "uint256"
    },
    {
     "indexed": false,
-    "internalType": "bool",
-    "name": "enabled",
-    "type": "bool"
+    "internalType": "uint256",
+    "name": "dividend",
+    "type": "uint256"
+   },
+   {
+    "indexed": false,
+    "internalType": "uint256",
+    "name": "usdtResynced",
+    "type": "uint256"
    }
   ],
-  "name": "BuyWhitelistSet",
+  "name": "Deflated",
   "type": "event"
  },
  {
@@ -105,6 +118,31 @@ export const POOL_ABI = [
    {
     "indexed": true,
     "internalType": "address",
+    "name": "user",
+    "type": "address"
+   },
+   {
+    "indexed": false,
+    "internalType": "uint256",
+    "name": "usdtIn",
+    "type": "uint256"
+   },
+   {
+    "indexed": false,
+    "internalType": "uint256",
+    "name": "lpBurned",
+    "type": "uint256"
+   }
+  ],
+  "name": "LiquidityInjected",
+  "type": "event"
+ },
+ {
+  "anonymous": false,
+  "inputs": [
+   {
+    "indexed": true,
+    "internalType": "address",
     "name": "previousOwner",
     "type": "address"
    },
@@ -116,69 +154,6 @@ export const POOL_ABI = [
    }
   ],
   "name": "OwnershipTransferred",
-  "type": "event"
- },
- {
-  "anonymous": false,
-  "inputs": [
-   {
-    "indexed": false,
-    "internalType": "uint256",
-    "name": "amount",
-    "type": "uint256"
-   }
-  ],
-  "name": "PoolBurned",
-  "type": "event"
- },
- {
-  "anonymous": false,
-  "inputs": [
-   {
-    "indexed": false,
-    "internalType": "uint256",
-    "name": "gst",
-    "type": "uint256"
-   },
-   {
-    "indexed": false,
-    "internalType": "uint256",
-    "name": "zyt",
-    "type": "uint256"
-   },
-   {
-    "indexed": false,
-    "internalType": "uint256",
-    "name": "usdt",
-    "type": "uint256"
-   }
-  ],
-  "name": "PoolInitialized",
-  "type": "event"
- },
- {
-  "anonymous": false,
-  "inputs": [
-   {
-    "indexed": true,
-    "internalType": "address",
-    "name": "seller",
-    "type": "address"
-   },
-   {
-    "indexed": false,
-    "internalType": "uint256",
-    "name": "zytGross",
-    "type": "uint256"
-   },
-   {
-    "indexed": false,
-    "internalType": "uint256",
-    "name": "usdtOut",
-    "type": "uint256"
-   }
-  ],
-  "name": "SellSettled",
   "type": "event"
  },
  {
@@ -218,13 +193,13 @@ export const POOL_ABI = [
    {
     "indexed": false,
     "internalType": "uint256",
-    "name": "snapshotGST",
+    "name": "price",
     "type": "uint256"
    },
    {
     "indexed": false,
     "internalType": "uint256",
-    "name": "snapshotPrice",
+    "name": "poolUSDT",
     "type": "uint256"
    },
    {
@@ -238,22 +213,71 @@ export const POOL_ABI = [
   "type": "event"
  },
  {
+  "anonymous": false,
+  "inputs": [
+   {
+    "indexed": true,
+    "internalType": "address",
+    "name": "seller",
+    "type": "address"
+   },
+   {
+    "indexed": false,
+    "internalType": "uint256",
+    "name": "zytGross",
+    "type": "uint256"
+   },
+   {
+    "indexed": false,
+    "internalType": "uint256",
+    "name": "slip",
+    "type": "uint256"
+   },
+   {
+    "indexed": false,
+    "internalType": "uint256",
+    "name": "usdtOut",
+    "type": "uint256"
+   }
+  ],
+  "name": "Sold",
+  "type": "event"
+ },
+ {
+  "inputs": [
+   {
+    "internalType": "uint256",
+    "name": "amount",
+    "type": "uint256"
+   }
+  ],
+  "name": "accrueDividendZyt",
+  "outputs": [],
+  "stateMutability": "nonpayable",
+  "type": "function"
+ },
+ {
   "inputs": [
    {
     "internalType": "address",
-    "name": "",
+    "name": "user",
     "type": "address"
+   },
+   {
+    "internalType": "uint256",
+    "name": "usdtIn",
+    "type": "uint256"
    }
   ],
-  "name": "buyWhitelist",
+  "name": "buyFor",
   "outputs": [
    {
-    "internalType": "bool",
-    "name": "",
-    "type": "bool"
+    "internalType": "uint256",
+    "name": "zytOut",
+    "type": "uint256"
    }
   ],
-  "stateMutability": "view",
+  "stateMutability": "nonpayable",
   "type": "function"
  },
  {
@@ -271,7 +295,7 @@ export const POOL_ABI = [
  },
  {
   "inputs": [],
-  "name": "dailyBurn",
+  "name": "deflate",
   "outputs": [
    {
     "internalType": "uint256",
@@ -302,7 +326,7 @@ export const POOL_ABI = [
  },
  {
   "inputs": [],
-  "name": "dividendPool",
+  "name": "dividendPoolZyt",
   "outputs": [
    {
     "internalType": "uint256",
@@ -341,6 +365,24 @@ export const POOL_ABI = [
  },
  {
   "inputs": [],
+  "name": "getReservesPublic",
+  "outputs": [
+   {
+    "internalType": "uint256",
+    "name": "zytReserve",
+    "type": "uint256"
+   },
+   {
+    "internalType": "uint256",
+    "name": "usdtReserve",
+    "type": "uint256"
+   }
+  ],
+  "stateMutability": "view",
+  "type": "function"
+ },
+ {
+  "inputs": [],
   "name": "getStage",
   "outputs": [
    {
@@ -366,47 +408,22 @@ export const POOL_ABI = [
   "type": "function"
  },
  {
-  "inputs": [],
-  "name": "gstToken",
-  "outputs": [
-   {
-    "internalType": "address",
-    "name": "",
-    "type": "address"
-   }
-  ],
-  "stateMutability": "view",
-  "type": "function"
- },
- {
   "inputs": [
    {
     "internalType": "uint256",
-    "name": "gstAmount",
-    "type": "uint256"
-   },
-   {
-    "internalType": "uint256",
-    "name": "zytAmount",
+    "name": "usdtIn",
     "type": "uint256"
    }
   ],
-  "name": "initialize",
-  "outputs": [],
-  "stateMutability": "nonpayable",
-  "type": "function"
- },
- {
-  "inputs": [],
-  "name": "initialized",
+  "name": "injectLiquidity",
   "outputs": [
    {
-    "internalType": "bool",
-    "name": "",
-    "type": "bool"
+    "internalType": "uint256",
+    "name": "lpBurned",
+    "type": "uint256"
    }
   ],
-  "stateMutability": "view",
+  "stateMutability": "nonpayable",
   "type": "function"
  },
  {
@@ -417,6 +434,19 @@ export const POOL_ABI = [
     "internalType": "uint256",
     "name": "",
     "type": "uint256"
+   }
+  ],
+  "stateMutability": "view",
+  "type": "function"
+ },
+ {
+  "inputs": [],
+  "name": "locker",
+  "outputs": [
+   {
+    "internalType": "address",
+    "name": "",
+    "type": "address"
    }
   ],
   "stateMutability": "view",
@@ -449,6 +479,19 @@ export const POOL_ABI = [
   "type": "function"
  },
  {
+  "inputs": [],
+  "name": "pair",
+  "outputs": [
+   {
+    "internalType": "address",
+    "name": "",
+    "type": "address"
+   }
+  ],
+  "stateMutability": "view",
+  "type": "function"
+ },
+ {
   "inputs": [
    {
     "internalType": "address",
@@ -468,7 +511,7 @@ export const POOL_ABI = [
  },
  {
   "inputs": [],
-  "name": "poolGST",
+  "name": "peakPoolUSDT",
   "outputs": [
    {
     "internalType": "uint256",
@@ -506,19 +549,6 @@ export const POOL_ABI = [
   "type": "function"
  },
  {
-  "inputs": [
-   {
-    "internalType": "uint256",
-    "name": "usdtIn",
-    "type": "uint256"
-   }
-  ],
-  "name": "recordBuy",
-  "outputs": [],
-  "stateMutability": "nonpayable",
-  "type": "function"
- },
- {
   "inputs": [],
   "name": "renounceOwnership",
   "outputs": [],
@@ -526,38 +556,39 @@ export const POOL_ABI = [
   "type": "function"
  },
  {
-  "inputs": [
+  "inputs": [],
+  "name": "reserveUSDT",
+  "outputs": [
    {
-    "internalType": "address",
-    "name": "addr",
-    "type": "address"
-   },
-   {
-    "internalType": "bool",
-    "name": "enabled",
-    "type": "bool"
+    "internalType": "uint256",
+    "name": "",
+    "type": "uint256"
    }
   ],
-  "name": "setBuyWhitelist",
-  "outputs": [],
-  "stateMutability": "nonpayable",
+  "stateMutability": "view",
   "type": "function"
  },
  {
   "inputs": [
    {
-    "internalType": "address[]",
-    "name": "addrs",
-    "type": "address[]"
+    "internalType": "address",
+    "name": "user",
+    "type": "address"
    },
    {
-    "internalType": "bool",
-    "name": "enabled",
-    "type": "bool"
+    "internalType": "uint256",
+    "name": "zytGross",
+    "type": "uint256"
    }
   ],
-  "name": "setBuyWhitelistBatch",
-  "outputs": [],
+  "name": "sellFor",
+  "outputs": [
+   {
+    "internalType": "uint256",
+    "name": "usdtOut",
+    "type": "uint256"
+   }
+  ],
   "stateMutability": "nonpayable",
   "type": "function"
  },
@@ -570,6 +601,19 @@ export const POOL_ABI = [
    }
   ],
   "name": "setDeflation",
+  "outputs": [],
+  "stateMutability": "nonpayable",
+  "type": "function"
+ },
+ {
+  "inputs": [
+   {
+    "internalType": "address",
+    "name": "_locker",
+    "type": "address"
+   }
+  ],
+  "name": "setLocker",
   "outputs": [],
   "stateMutability": "nonpayable",
   "type": "function"
@@ -591,29 +635,18 @@ export const POOL_ABI = [
   "inputs": [
    {
     "internalType": "address",
-    "name": "seller",
+    "name": "_pair",
     "type": "address"
-   },
-   {
-    "internalType": "uint256",
-    "name": "zytGross",
-    "type": "uint256"
    }
   ],
-  "name": "settleSell",
-  "outputs": [
-   {
-    "internalType": "uint256",
-    "name": "usdtOut",
-    "type": "uint256"
-   }
-  ],
+  "name": "setPair",
+  "outputs": [],
   "stateMutability": "nonpayable",
   "type": "function"
  },
  {
   "inputs": [],
-  "name": "snapshotPoolGST",
+  "name": "snapshotPoolUSDT",
   "outputs": [
    {
     "internalType": "uint256",
@@ -627,6 +660,32 @@ export const POOL_ABI = [
  {
   "inputs": [],
   "name": "snapshotPrice",
+  "outputs": [
+   {
+    "internalType": "uint256",
+    "name": "",
+    "type": "uint256"
+   }
+  ],
+  "stateMutability": "view",
+  "type": "function"
+ },
+ {
+  "inputs": [],
+  "name": "swapGate",
+  "outputs": [
+   {
+    "internalType": "bool",
+    "name": "",
+    "type": "bool"
+   }
+  ],
+  "stateMutability": "view",
+  "type": "function"
+ },
+ {
+  "inputs": [],
+  "name": "totalLpBurned",
   "outputs": [
    {
     "internalType": "uint256",
@@ -672,6 +731,19 @@ export const POOL_ABI = [
  },
  {
   "inputs": [],
+  "name": "zytIsToken0",
+  "outputs": [
+   {
+    "internalType": "bool",
+    "name": "",
+    "type": "bool"
+   }
+  ],
+  "stateMutability": "view",
+  "type": "function"
+ },
+ {
+  "inputs": [],
   "name": "zytToken",
   "outputs": [
    {
@@ -683,4 +755,4 @@ export const POOL_ABI = [
   "stateMutability": "view",
   "type": "function"
  }
-] as const;
+];

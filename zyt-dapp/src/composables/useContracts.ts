@@ -5,6 +5,7 @@ import { POOL_ABI } from "../abis/pool";
 import { CONFIG_ABI } from "../abis/config";
 import { ZYT_ABI } from "../abis/zyt";
 import { USDT_ABI } from "../abis/usdt";
+import { CREATOR_ABI } from "../abis/creator";
 
 let signer: Signer | null = null;
 let provider: Provider | null = null;
@@ -49,4 +50,20 @@ export function getContracts(rw = false) {
     zyt: new Contract(c.zyt, ZYT_ABI, rw ? s! : p),
     usdt: new Contract(c.usdt, USDT_ABI, rw ? s! : p),
   };
+}
+
+/**
+ * v17：底池创建合约只读实例。
+ * Creator 地址在部分环境尚未接线（部署后才填），返回 null 时调用方跳过相关展示，
+ * 不影响池数据与用户数据的读取。
+ */
+export function getCreatorContract(): Contract | null {
+  const addr = currentChain().contracts.creator;
+  if (!addr) return null;
+  try {
+    const { provider: p } = conn(false);
+    return new Contract(addr, CREATOR_ABI, p);
+  } catch {
+    return null;
+  }
 }

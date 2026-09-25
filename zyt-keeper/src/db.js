@@ -78,6 +78,9 @@ function migrateMemory(d) {
     withdraw_total TEXT DEFAULT '0',
     dynamic_quota TEXT DEFAULT '0',
     dynamic_withdrawn TEXT DEFAULT '0',
+    converted_total TEXT DEFAULT '0',
+    received_value TEXT DEFAULT '0',
+    exit_day INTEGER DEFAULT 0,
     power_base TEXT DEFAULT '0',
     power_day INTEGER DEFAULT 0,
     is_exited INTEGER DEFAULT 0,
@@ -101,6 +104,8 @@ function migrateMemory(d) {
     price TEXT,
     slippage_pct INTEGER,
     stage INTEGER,
+    day_sold_gst TEXT DEFAULT '0',
+    snapshot_pool_usdt TEXT DEFAULT '0',
     updated_at INTEGER
   );
   CREATE TABLE IF NOT EXISTS keeper_runs (
@@ -171,6 +176,9 @@ async function createMysqlDb(url) {
       withdraw_total VARCHAR(80) DEFAULT '0',
       dynamic_quota VARCHAR(80) DEFAULT '0',
       dynamic_withdrawn VARCHAR(80) DEFAULT '0',
+      converted_total VARCHAR(80) DEFAULT '0',
+      received_value VARCHAR(80) DEFAULT '0',
+      exit_day INT DEFAULT 0,
       power_base VARCHAR(80) DEFAULT '0',
       power_day INT DEFAULT 0,
       is_exited TINYINT(1) DEFAULT 0,
@@ -194,6 +202,8 @@ async function createMysqlDb(url) {
       price VARCHAR(80),
       slippage_pct INT,
       stage INT,
+      day_sold_gst VARCHAR(80) DEFAULT '0',
+      snapshot_pool_usdt VARCHAR(80) DEFAULT '0',
       updated_at BIGINT
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
     `CREATE TABLE IF NOT EXISTS keeper_runs (
@@ -227,6 +237,22 @@ async function createMysqlDb(url) {
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
   ];
   for (const sql of DDL) await pool.query(sql);
+
+  // v17 列迁移：老库已存在 users 表时 CREATE TABLE IF NOT EXISTS 不会补列，需显式 ALTER（已存在则忽略）
+  const MIGRATIONS = [
+    "ALTER TABLE users ADD COLUMN converted_total VARCHAR(80) DEFAULT '0'",
+    "ALTER TABLE users ADD COLUMN received_value VARCHAR(80) DEFAULT '0'",
+    "ALTER TABLE users ADD COLUMN exit_day INT DEFAULT 0",
+    "ALTER TABLE pool_state ADD COLUMN day_sold_gst VARCHAR(80) DEFAULT '0'",
+    "ALTER TABLE pool_state ADD COLUMN snapshot_pool_usdt VARCHAR(80) DEFAULT '0'",
+  ];
+  for (const sql of MIGRATIONS) {
+    try {
+      await pool.query(sql);
+    } catch {
+      /* 列已存在，忽略 */
+    }
+  }
 
   // SQLite 方言 → MySQL（在统一 SQL 基础上做最小翻译）
   // 注意：MySQL 的 ON DUPLICATE KEY UPDATE 不带 SET 关键字；新值引用用 VALUES(col)（8.0.20+ 兼容）

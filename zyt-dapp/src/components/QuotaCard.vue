@@ -12,15 +12,17 @@
         <div class="bar-inner" :style="{ width: pct + '%' }" />
       </div>
       <div class="quota-meta">
-        <span>{{ $t("home.quotaUsed") }}: {{ used }} U</span>
-        <span>{{ $t("home.quotaRemain") }}: {{ remain }} U</span>
+        <span>{{ $t("home.quotaTotal") }}: {{ totalFmt }} U</span>
+        <span>{{ $t("home.quotaUsed") }}: {{ usedFmt }} U</span>
       </div>
+      <!-- v17：额度用尽优先提示（卖出亦可消耗额度，阶段 1 也可能出现）；否则提示阶段 1 不可兑换 -->
       <div v-if="exhausted" class="exhaust-tip">
-        ⚠️ {{ $t("home.quotaExhausted") }}
+        {{ $t("home.quotaExhausted") }}
         <van-button size="mini" type="primary" round @click="$emit('reinvest')">
           {{ $t("home.reinvest") }}
         </van-button>
       </div>
+      <div v-else-if="stageBlocked" class="stage-tip">{{ $t("home.stage1ConvertTip") }}</div>
     </div>
 
     <!-- #7 强制卖出进度（keeper API 数据） -->
@@ -62,25 +64,35 @@ import { computed } from "vue";
 import { formatEther } from "ethers";
 import type { KeeperForceSell } from "../composables/useKeeperApi";
 
+/**
+ * v9.1 买入额度卡（2026-09-24 语义修正：v8 的「算力兑换」已删除，买入消耗买额 buyQuota 1:1）：
+ * - 可用买额 = 合约 userInfo[5]（buyQuota - buyUsed，keeper /user 补充链上读）
+ * - 累计买额 = 入金累计（buyQuotaRate 当前 1:1，费率调整后此处需同步）
+ * - 已用买额 = 累计买额 − 可用买额
+ */
 const props = defineProps<{
-  quota: string;
-  used: string;
+  /** 可用买入额度（human，userInfo[5]） */
+  buyQuotaLeft: string;
+  /** 入金累计（human；当前 buyQuotaRate=100% 时等于累计买额） */
+  depositTotal: string;
+  /** 当前阶段（1/2/3），阶段 1 禁买 */
+  stage: number;
   forceSell?: KeeperForceSell | null;
 }>();
 
 const emit = defineEmits<{ (e: "reinvest"): void }>();
 
-const remain = computed(() => {
-  const q = parseFloat(props.quota) || 0;
-  const u = parseFloat(props.used) || 0;
-  return Math.max(0, q - u).toFixed(2);
-});
-const exhausted = computed(() => parseFloat(remain.value) <= 0 && parseFloat(props.quota) > 0);
+const leftNum = computed(() => parseFloat(props.buyQuotaLeft) || 0);
+const totalNum = computed(() => parseFloat(props.depositTotal) || 0);
+
+const remain = computed(() => leftNum.value.toFixed(2));
+const usedFmt = computed(() => Math.max(0, totalNum.value - leftNum.value).toFixed(2));
+const totalFmt = computed(() => totalNum.value.toFixed(2));
+const stageBlocked = computed(() => props.stage === 1);
+const exhausted = computed(() => totalNum.value > 0 && leftNum.value <= 0);
 const pct = computed(() => {
-  const q = parseFloat(props.quota) || 0;
-  const u = parseFloat(props.used) || 0;
-  if (q <= 0) return 0;
-  return Math.min(100, (u / q) * 100);
+  if (totalNum.value <= 0) return 0;
+  return Math.min(100, ((totalNum.value - leftNum.value) / totalNum.value) * 100);
 });
 
 /** 压缩显示 ZYT 数量（wei → 亿/万） */
@@ -151,6 +163,16 @@ function fmtDeadline(sec: number): string {
       justify-content: space-between;
       font-size: 11px;
       color: var(--text-secondary);
+    }
+    .stage-tip {
+      margin-top: 10px;
+      padding: 8px 10px;
+      border-radius: var(--radius-sm);
+      background: rgba(245, 193, 93, 0.1);
+      border: 1px solid rgba(245, 193, 93, 0.3);
+      color: var(--gold);
+      font-size: 12px;
+      line-height: 1.5;
     }
     .exhaust-tip {
       margin-top: 10px;

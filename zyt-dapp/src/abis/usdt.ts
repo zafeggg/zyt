@@ -1,4 +1,5 @@
-// 自动生成：contracts/mocks/MockERC20.sol/MockERC20.json
+// 自动生成：contracts/mocks
+// 由 scripts/gen-abis.mjs 生成，请勿手工编辑
 export const USDT_ABI = [
  {
   "inputs": [
@@ -342,4 +343,4 @@ export const USDT_ABI = [
   "stateMutability": "nonpayable",
   "type": "function"
  }
-] as const;
+];

@@ -23,6 +23,8 @@ export interface ChainConfig {
     mining: string;
     deflation: string;
     usdt: string;
+    /** v17：底池创建合约（入金 60% 通道）。留空字符串 = 未接线，前端跳过相关展示 */
+    creator: string;
   };
 }
 
@@ -33,20 +35,23 @@ const LOCAL: ChainConfig = {
   name: "hardhat",
   chainId: 31337,
   rpc: "http://127.0.0.1:8545",
-  apiBase: envApiBase || "http://localhost:8080",
+  // 本地联调走纯合约直连（apiBase 留空 → usePoolData 自动降级链上读），
+  // 避免误用连 testnet 的 keeper 数据；如需本地 keeper，设 VITE_API_BASE=http://localhost:8080
+  apiBase: envApiBase,
   // 本地测试：hardhat 账户 #0 充当根邀请码
   rootInvite: "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
   contracts: {
-    // 来自 scripts/deploy.js 本地部署输出
-    config: "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512",
-    gst: "0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0",
+    // 来自 scripts/deploy.js 本地部署输出（2026-09-25 v9.1 本地套件）
+    config: "0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0",
+    gst: "",
     zyt: "0xCf7Ed3AccA5a467e9e704C703E8D87F634fB0Fc9",
-    forceSell: "0xDc64a140Aa3E981100a9becA4E685f962f0cF6C9",
-    pool: "0x5FC8d32690cc91D4c39d9d3abcBD16989F875707",
-    referral: "0x0165878A594ca255338adfa4d48449f69242Eb8F",
-    mining: "0x2279B7A0a67DB372996a5FaB50D91eAA73d2eBe6",
-    deflation: "0x8A791620dd6260079BF849Dc5567aDC3F2FdC318",
+    forceSell: "0x2279B7A0a67DB372996a5FaB50D91eAA73d2eBe6",
+    pool: "0x0165878A594ca255338adfa4d48449f69242Eb8F",
+    referral: "0xa513E6E4b8f2a923D98304ec87F64353C4D5C853",
+    mining: "0x610178dA211FEF7D417bC0e6FeD39F05609AD788",
+    deflation: "0xB7f8BC63BbcaD18155201308C8f3540b07f84F5e",
     usdt: "0x5FbDB2315678afecb367f032d93F642f64180aa3",
+    creator: "0x5FC8d32690cc91D4c39d9d3abcBD16989F875707",
   },
 };
 
@@ -59,17 +64,20 @@ const BSC_TESTNET: ChainConfig = {
   // 测试网：临时用集成测试钱包占位，正式营销地址确定后替换
   rootInvite: "0x87C0aF08c0F974E86CAC508faA239bB1Cc2f2241",
   contracts: {
-    // 第五套部署地址（2026-09-01，与 smoke-testnet.js / keeper .env 一致）
-    config: "0x55F4e5F732ACfa49015AB6546a2766Db7534cDbd",
-    gst: "0xD63C5528008A6c9C521Fe2BEA9349bE4687b5ed3",
-    zyt: "0xdF18105bB57165c59AD651Eda1B4d896412d4166",
-    forceSell: "0x24685AF81fc8443ED46b11Cb17Ba7af0ae55ce06",
-    pool: "0x020927BC660f7631709d388C992979359196DcfD",
-    referral: "0x3C999B3E1292d33B1aB22071691674A38Da84e0E",
-    mining: "0x1ffCec692Ef2c8287C1dE7248B0621bdAd135703",
-    deflation: "0x16E8A145D015D80892e5CFe8cE305F0717F229a9",
-    // 第五套用 MockUSDT（非官方 USDT；测试钱包余额/授权均针对此地址）
-    usdt: "0x7749da5d64c0ABA2A8203c0C630d31e7D13cFb29",
+    // 第十套 v9.1 部署地址（2026-09-24 双计修复版，与 keeper .env 一致；USDT_MOCK=1 试运行口径）
+    config: "0x8402D46f5974301028Ee461d485748b71b0dc487",
+    // v9 弃 GST：字段保留为空串兼容旧类型定义，勿再引用
+    gst: "",
+    zyt: "0x9D434F75564410d6e41664716defEd92d95985C1",
+    forceSell: "0xCC89c59Cc9b47C7D32545F8f53E0633d3e01a90D",
+    pool: "0x36fa17d24dD706c5a9F61e4Afb47eD3C357b349e",
+    referral: "0xf6Fa72Dd11E0426419D3c3aA75e91730E75B0C4C",
+    mining: "0x7e3507050db25AD09f2D772Df72C4bea3bae0b04",
+    deflation: "0x80a98C926755604A5582289eecd3eB25C816EF8b",
+    // 第十套用 MockUSDT（非官方 USDT；测试钱包余额/授权均针对此地址）
+    usdt: "0x33F797D0cC0a5462809c957641A09B37FeeFF41A",
+    // v9：锁仓合约（LP 锁仓 + 通缩抽池，建池数据展示数据源）
+    creator: "0x9bFccB1ADb2da1d634aC9CF426e5e276754a6F74",
   },
 };
 
@@ -95,6 +103,8 @@ const BSC_MAINNET: ChainConfig = {
     deflation: "0x95e60944e0DF1846f5498B4b8A678564f9aCDe26",
     // 试运行版为 TestUSDT（MockERC20，bscscan 已 verify）；正式版替换为真实 USDT 0x55d398326f99059fF775485246999027B3197955
     usdt: "0x4cd6d10260Cdfc55A9dcf97dfffade73080E7608",
+    // v17：Creator 部署后填入（同上）
+    creator: "",
   },
 };
 

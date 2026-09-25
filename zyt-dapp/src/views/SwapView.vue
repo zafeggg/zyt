@@ -14,11 +14,16 @@ import { usePoolData } from "../composables/usePoolData";
 
 const { poolStats, refresh } = usePoolData();
 
+/**
+ * v9：与合约 getCurrentSlippage 同口径的「池 USDT 较峰值基准回落比例」。
+ * 基准 = max(初始 2.1 万 U, 历史峰值)；当前池 U 回落达 1/2/3/4% → 滑点 10/20/40/80%。
+ */
 const reductionPct = computed(() => {
-  const gst = parseFloat(poolStats.value.poolGST) || 0;
-  const snap = parseFloat(poolStats.value.snapshotGST) || 0;
-  if (snap <= 0) return "0";
-  return ((snap - gst) / snap) * 100 >= 0 ? (((snap - gst) / snap) * 100).toFixed(1) : "0";
+  const cur = parseFloat(poolStats.value.poolUSDT || "0") || 0;
+  const peak = parseFloat(poolStats.value.peakPoolUSDT || "0") || 0;
+  if (peak <= 0 || cur >= peak) return "0";
+  const pct = ((peak - cur) / peak) * 100;
+  return pct > 0 ? pct.toFixed(1) : "0";
 });
 
 onMounted(() => refresh());

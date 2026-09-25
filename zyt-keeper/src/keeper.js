@@ -5,25 +5,23 @@ import { getDb } from "./db.js";
 import { logRun, notify } from "./alert.js";
 import { lock } from "./lock.js";
 import { Ledger } from "./ledger.js";
-import { DEFLATION_IFACE } from "./abis.js";
+import { DEFLATION_IFACE, MINING_USERINFO_ABI } from "./abis.js";
 
 const DEFLATION_ABI = [
   "function dailySnapshot(uint256 totalPower)",
   "function lastSnapshotDay() view returns (uint256)",
 ];
 const POOL_VIEW_ABI = [
-  "function poolGST() view returns (uint256)",
   "function poolZYT() view returns (uint256)",
   "function poolUSDT() view returns (uint256)",
-  "function snapshotPoolGST() view returns (uint256)",
   "function getPrice() view returns (uint256)",
   "function getStage() view returns (uint256)",
   "function getCurrentSlippage() view returns (uint256)",
-  "function dividendPool() view returns (uint256)",
+  "function dividendPoolZyt() view returns (uint256)",
 ];
 
 /**
- * Keeper 快照机器人：每日 08:00（北京时间）触发每日快照/通缩/产出释放。
+ * Keeper 快照机器人：每日 08:01（北京时间）触发每日快照/通缩/产出释放。
  * - 全网算力由链下账本统计后传入合约
  * - v8：签名钱包接入 —— 写交易（dailySnapshot）必须由 KEEPER_PRIVATE_KEY 签名；
  *       私钥地址仅作「定时触发器」，合约不向其授权资金操作；缺失私钥时拒绝执行并告警
@@ -53,7 +51,7 @@ export class Keeper {
     this.ledger = new Ledger(this.provider, {
       pool: new Contract(CONFIG.contracts.pool, POOL_VIEW_ABI, this.provider),
       zyt: new Contract(CONFIG.contracts.zyt, ["function getUserCount() view returns (uint256)", "function getUserAt(uint256) view returns (address)"], this.provider),
-      mining: new Contract(CONFIG.contracts.mining, ["function userInfo(address) view returns (uint256,uint256,uint256,uint256,uint256,uint256,bool)"], this.provider),
+      mining: new Contract(CONFIG.contracts.mining, MINING_USERINFO_ABI, this.provider),
     });
     this.lock = false;
   }
@@ -131,14 +129,26 @@ export class Keeper {
 
   start() {
     const expr = CONFIG.keeper.snapshotCron;
-    // v10：显式指定 cron 时区为 UTC（"0 0 * * *" = 北京 08:00），防系统时区漂移；
+    // v10：显式指定 cron 时区为 UTC（"1 0 * * *" = 北京 08:01），防系统时区漂移；
     // 保留 task 引用防 GC 导致定时任务丢失
     this.cronTask = cron.schedule(expr, () => this.runSnapshot(), {
       timezone: CONFIG.keeper.snapshotCronTz,
     });
+    // v9.1 防漏自检（2026-09-25）：node-cron 无 catch-up，系统睡眠/休眠会直接跳过当日调度点
+    // （实测：昨晚 19:04 睡眠今晨 09:01 唤醒，08:01 快照丢失且不再触发）。
+    // 启动后 30s + 每 10min 调 runSnapshot 兜底——runSnapshot 幂等（同日已快照自动 skip + DB 锁防重），
+    // 唤醒后最多 10 分钟内自动补跑。
+    this.catchUpTimer = setTimeout(() => this.runSnapshot(), 30_000);
+    this.catchUpInterval = setInterval(() => this.runSnapshot(), 10 * 60_000);
     const signerState = this.signerReady
       ? `signer=${this.signerAddress}`
       : "signer=NOT_CONFIGURED (写交易将拒绝)";
     logRun("keeper", "start", `cron="${expr}" tz=${CONFIG.keeper.snapshotCronTz} ${signerState}`);
+  }
+
+  stop() {
+    if (this.cronTask) this.cronTask.stop();
+    if (this.catchUpTimer) clearTimeout(this.catchUpTimer);
+    if (this.catchUpInterval) clearInterval(this.catchUpInterval);
   }
 }

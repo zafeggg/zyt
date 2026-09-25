@@ -8,6 +8,7 @@ const BLACK_HOLE = "0x000000000000000000000000000000000000dEaD";
 
 const GST_MAX = 333_000_000n * 10n ** 18n;
 const GST_POOL = 21_000n * 10n ** 18n;
+const GST_LP_RESERVE = GST_MAX - GST_POOL; // LP 补充储备 = 全部剩余供应（2026-09-22 口径：不再转黑洞）
 const ZYT_MAX = 2_100_000_000n * 10n ** 18n;
 const DAY = 86400;
 const FIFTEEN_DAYS = 15 * DAY;
@@ -62,6 +63,23 @@ async function deployFixture(opts = {}) {
   const deflation = await Deflation.deploy(await config.getAddress(), await pool.getAddress(), await mining.getAddress());
   await deflation.waitForDeployment();
 
+  // 底池创建链路：MockRouter + LP 凭证 + ZYTLiquidityCreator
+  const lpToken = await Mock.deploy("Mock LP", "MLP", 18);
+  await lpToken.waitForDeployment();
+  const Router = await ethers.getContractFactory("MockRouter");
+  const router = await Router.deploy(await lpToken.getAddress());
+  await router.waitForDeployment();
+  const Creator = await ethers.getContractFactory("ZYTLiquidityCreator");
+  const creator = await Creator.deploy(
+    await usdt.getAddress(),
+    await gst.getAddress(),
+    await zyt.getAddress(),
+    await router.getAddress(),
+    await lpToken.getAddress(),
+    BLACK_HOLE
+  );
+  await creator.waitForDeployment();
+
   // 接线
   await config.setAddress("marketAddress", deployer.address);
   await config.setAddress("technicalAddress", deployer.address);
@@ -86,6 +104,20 @@ async function deployFixture(opts = {}) {
   // P2-2 白名单保护：fixture 中 marketAddress/technicalAddress = deployer，豁免强制卖出初始化
   await zyt.setWhiteList(deployer.address, true);
 
+  // 底池创建链路接线
+  await zyt.setCreator(await creator.getAddress());
+  await zyt.setWhiteList(await creator.getAddress(), true); // 豁免转账税与强制卖出 hook
+  await zyt.setWhiteList(await lpToken.getAddress(), true); // LP 凭证接收方豁免
+  await zyt.setWhiteList(await router.getAddress(), true);   // Router 拉取 ZYT 时豁免（否则被当作收币用户登记）
+  await gst.setTransferAllowed(await creator.getAddress(), true);
+  await gst.setTransferAllowed(await router.getAddress(), true); // Router 需可接收 GST
+  await gst.setCreator(await creator.getAddress()); // P1-11：储备池唯一出口
+  await gst.setReserve(deployer.address); // LP 补充储备池（测试用 deployer）
+  await creator.setMining(await mining.getAddress());
+  await creator.setReserve(deployer.address);
+  await creator.setPriceSource(await pool.getAddress());
+  await mining.setCreator(await creator.getAddress());
+
   await pool.setMining(await mining.getAddress());
   await pool.setDeflation(await deflation.getAddress());
   await referral.setMining(await mining.getAddress());
@@ -103,12 +135,14 @@ async function deployFixture(opts = {}) {
   await usdt.approve(await pool.getAddress(), GST_POOL);
   await pool.initialize(GST_POOL, ZYT_MAX);
   await gst.lockRemaining();
+  // LP 补充储备池（deployer）授权 Creator 按需取用 GST
+  await gst.approve(await creator.getAddress(), ethers.MaxUint256);
 
   // 默认 stage3 自由买卖（两道门槛都设 0 → getStage 恒为 3）
   await config.setUint("poolStage1USDT", 0);
   await config.setUint("poolStage2USDT", 0);
 
-  return { deployer, alice, bob, carol, dave, usdt, gst, zyt, config, pool, mining, referral, deflation, forceSell };
+  return { deployer, alice, bob, carol, dave, usdt, gst, zyt, config, pool, mining, referral, deflation, forceSell, compute, creator, router, lpToken };
 }
 
 /** 给用户充值 USDT 并授权 */
@@ -119,21 +153,22 @@ async function fundUsdt(usdt, user, amount, spender) {
 
 describe("ZYT 合约体系（方案 v7）", function () {
   describe("GSTToken", function () {
-    it("总供应 3.33 亿且全量铸造给部署者", async function () {
+    it("总供应 3.33 亿：底池 2.1 万 + 其余全部划入 LP 补充储备（不转黑洞）", async function () {
       const { deployer, gst } = await deployFixture();
       expect(await gst.totalSupply()).to.equal(GST_MAX);
-      // 底池 2.1 万已注入，其余已永久锁定转黑洞 → 部署者余额 0
-      expect(await gst.balanceOf(deployer.address)).to.equal(0n);
-      expect(await gst.balanceOf(BLACK_HOLE)).to.equal(GST_MAX - GST_POOL);
+      // 剩余供应全部划给 reserve（测试用 deployer），不再转黑洞
+      expect(await gst.balanceOf(deployer.address)).to.equal(GST_MAX - GST_POOL);
+      expect(await gst.reserve()).to.equal(deployer.address);
+      expect(await gst.balanceOf(BLACK_HOLE)).to.equal(0n);
     });
 
-    it("剩余供应永久锁定转黑洞，之后禁止转出", async function () {
-      const { gst, deployer } = await deployFixture();
+    it("剩余供应锁定并划入储备池，第三方转出被拒、豁免地址可收", async function () {
+      const { gst, creator } = await deployFixture();
       expect(await gst.supplyLocked()).to.equal(true);
-      expect(await gst.balanceOf(BLACK_HOLE)).to.equal(GST_MAX - GST_POOL);
-      // 部署者余额为 0（已锁），尝试其他持有者转出会被阻止（锁定后仅黑洞可收）
+      expect(await gst.balanceOf(BLACK_HOLE)).to.equal(0n);
       const [, alice] = await ethers.getSigners();
       expect(await gst.balanceOf(alice.address)).to.equal(0n);
+      expect(await gst.transferAllowed(await creator.getAddress())).to.equal(true);
     });
   });
 
@@ -181,159 +216,176 @@ describe("ZYT 合约体系（方案 v7）", function () {
       expect(await pool.getPrice()).to.equal(ethers.parseEther("0.00001"));
     });
 
-    it("滑点档位：底池 GST 减少 ≥1/2/3/4% → 10/20/40/80%", async function () {
-      const { pool, deflation, usdt, zyt, mining, alice, bob, carol, deployer } = await deployFixture();
-      // 初始无减少 → 基础 5%
+    it("P1-10：滑点档位按「当日卖出量 / USDT 快照」分档，入金不触发", async function () {
+      const { pool, deflation, usdt, zyt, mining, alice } = await deployFixture();
+      // 入金前无卖出 → 基准 5%
       expect(await pool.getCurrentSlippage()).to.equal(500n);
 
-      // 先入金（4 用户各 500U，底池 GST 增加），再快照基准
-      const signers = [alice, bob, carol, deployer];
-      for (const s of signers) {
-        await fundUsdt(usdt, s, ethers.parseEther("500"), await mining.getAddress());
-        await mining.connect(s).deposit(ethers.parseEther("500"), ZERO);
+      // 入金 3 次共 1500U（单笔上限 500U），池 USDT +900
+      for (let i = 0; i < 3; i++) {
+        await fundUsdt(usdt, alice, ethers.parseEther("500"), await mining.getAddress());
+        await mining.connect(alice).deposit(ethers.parseEther("500"), ZERO);
       }
+      // 核心断言：入金（recordBuy 会改写 poolGST）不得写入 daySoldGST，滑点保持基准
+      expect(await pool.daySoldGST()).to.equal(0n);
+      expect(await pool.getCurrentSlippage()).to.equal(500n);
+
+      // 兑换 1500U 等值 ZYT 用于卖出
+      await mining.connect(alice).convertPowerToZyt(ethers.parseEther("1500"));
+      const bal = await zyt.balanceOf(alice.address);
+      expect(bal).to.be.gt(0n);
+
+      // 快照：分母 = 当前 poolUSDT，当日卖出量归零
       await deflation.dailySnapshot(0);
-      const snapshot = await pool.snapshotPoolGST();
-      expect(snapshot).to.be.gt(GST_POOL);
+      expect(await pool.snapshotPoolUSDT()).to.equal(await pool.poolUSDT());
+      expect(await pool.daySoldGST()).to.equal(0n);
 
-      // 充值池 USDT 模拟 DEX 流动性（卖出支付储备）
-      await usdt.connect(alice).faucet(ethers.parseEther("5000"));
-      await usdt.connect(alice).transfer(await pool.getAddress(), ethers.parseEther("5000"));
+      // 与合约同口径的档位推算（分档不变式）
+      const expectedTier = (sold, snap) => {
+        if (snap === 0n || sold === 0n) return 500n;
+        const r = (sold * 10000n) / snap;
+        if (r >= 400n) return 8000n;
+        if (r >= 300n) return 4000n;
+        if (r >= 200n) return 2000n;
+        if (r >= 100n) return 1000n;
+        return 500n;
+      };
 
-      // 集中卖出：底池 GST 单调下降
-      for (const s of signers) {
-        const bal = await zyt.balanceOf(s.address);
-        if (bal > 0n) {
-          await zyt.connect(s).approve(await pool.getAddress(), ethers.MaxUint256);
-          await mining.connect(s).sellZyt(bal);
-        }
+      await zyt.connect(alice).approve(await pool.getAddress(), ethers.MaxUint256);
+      const batch = bal / 5n;
+      const tiers = [];
+      for (let i = 0; i < 4; i++) {
+        await mining.connect(alice).sellZyt(batch);
+        const sold = await pool.daySoldGST();
+        const snap = await pool.snapshotPoolUSDT();
+        const slip = await pool.getCurrentSlippage();
+        expect(slip).to.equal(expectedTier(sold, snap)); // 分档不变式逐步成立
+        tiers.push(Number(slip));
       }
-      const gstAfter = await pool.poolGST();
-      const reduction = ((snapshot - gstAfter) * 10000n) / snapshot;
-      expect(reduction).to.be.gte(400n); // 底池 GST 减少 ≥4%
-      expect(await pool.getCurrentSlippage()).to.equal(8000n); // 滑点升到 80% 档
+      // 分批卖出累计越过 4% → 逐档升到 80%
+      expect(tiers[0]).to.be.gte(1000);
+      expect(tiers[tiers.length - 1]).to.equal(8000);
     });
 
-    it("阶段门控：stage1 禁止买入，stage2 需 LP 额度", async function () {
-      const { pool, config, usdt, mining, alice } = await deployFixture();
-      // stage1：底池 21000 < 10M 但这里我们把门槛设回 21001
-      await config.setUint("poolStage1USDT", GST_POOL + 1n);
+    it("阶段门控：阶段 1 入金不受限但买币被拒，阶段 2 起可兑换", async function () {
+      const { pool, config, usdt, mining, zyt, alice } = await deployFixture();
+      // 构造阶段 1：门槛远高于当前底池（入金后底池仍低于门槛）
+      await config.setUint("poolStage1USDT", ethers.parseEther("1000000"));
       await config.setUint("poolStage2USDT", 1n << 120n);
       expect(await pool.getStage()).to.equal(1n);
-      await fundUsdt(usdt, alice, ethers.parseEther("100"), await mining.getAddress());
-      await expect(mining.connect(alice).deposit(ethers.parseEther("100"), ZERO)).to.be.revertedWith("Mining: buy disabled in stage1");
+      await fundUsdt(usdt, alice, ethers.parseEther("300"), await mining.getAddress());
 
-      // stage2：21000 >= 20000 → stage2，需要 LP 额度
-      await config.setUint("poolStage1USDT", ethers.parseEther("20000"));
-      expect(await pool.getStage()).to.equal(2n);
-      await expect(mining.connect(alice).deposit(ethers.parseEther("100"), ZERO)).to.be.revertedWith("Mining: no LP quota");
-      await fundUsdt(usdt, alice, ethers.parseEther("300"), await mining.getAddress()); // addLiquidity 后仍有余额
-      await mining.connect(alice).addLiquidity(ethers.parseEther("100"));
+      // 入金不受阶段限制（底池 USDT 的唯一增长来源，否则系统死锁）
       await mining.connect(alice).deposit(ethers.parseEther("100"), ZERO);
       expect((await mining.userInfo(alice.address))[0]).to.equal(ethers.parseEther("100"));
+
+      // 阶段 1 买币（算力兑换）被拒
+      await expect(mining.connect(alice).convertPowerToZyt(ethers.parseEther("100")))
+        .to.be.revertedWith("Mining: buy disabled in stage1");
+
+      // 进入阶段 2 后可兑换
+      await config.setUint("poolStage1USDT", ethers.parseEther("20000"));
+      expect(await pool.getStage()).to.equal(2n);
+      await mining.connect(alice).convertPowerToZyt(ethers.parseEther("100"));
+      expect(await zyt.balanceOf(alice.address)).to.be.gt(0n);
     });
   });
 
   describe("ZYTMining 入金 / 算力 / 动态额度", function () {
-    it("入金 100U：40% 营销、60% 底池，mint 对应 ZYT，算力=100，动态额度=500", async function () {
+    it("入金 100U：40% 生态奖励直发 USDT、60% 入底池，算力=100，入金者不获 ZYT", async function () {
       const { mining, pool, usdt, zyt, deployer, alice } = await deployFixture();
       const usdtBefore = await usdt.balanceOf(deployer.address);
       await fundUsdt(usdt, alice, ethers.parseEther("100"), await mining.getAddress());
       await mining.connect(alice).deposit(ethers.parseEther("100"), ZERO);
 
-      // 营销 40U
+      // 40U 生态奖励：技术 10U 直发 + 代数预算 30U（无上级，落营销账户），测试中两者同为 deployer
       expect(await usdt.balanceOf(deployer.address)).to.equal(usdtBefore + ethers.parseEther("40"));
       // 底池 +60U
       expect(await pool.poolUSDT()).to.equal(GST_POOL + ethers.parseEther("60"));
-      // mint ZYT = 60U / 当日快照锁定价（v7：初始快照价 0.00001 U/ZYT，注入后实时价不影响当日计价）
-      const expectedMint = ethers.parseEther("60") * 10n ** 18n / ethers.parseEther("0.00001");
-      expect(await zyt.balanceOf(alice.address)).to.equal(expectedMint);
-      // 算力 + 额度
+      // 入金者不获得 ZYT（阶段 1 口径：手中不应出现 ZYT）
+      expect(await zyt.balanceOf(alice.address)).to.equal(0n);
+      // 算力 = 100
       const info = await mining.userInfo(alice.address);
       expect(info[4]).to.equal(ethers.parseEther("100")); // power
-      expect(info[2]).to.equal(ethers.parseEther("500")); // quota
     });
 
-    it("复投刷新动态额度（1000U → 5000U）", async function () {
+    it("复投累加算力（300 → 追加 200 → 500）", async function () {
       const { mining, usdt, alice } = await deployFixture();
       await fundUsdt(usdt, alice, ethers.parseEther("500"), await mining.getAddress());
       await mining.connect(alice).deposit(ethers.parseEther("300"), ZERO);
       let info = await mining.userInfo(alice.address);
-      expect(info[2]).to.equal(ethers.parseEther("1500"));
+      expect(info[4]).to.equal(ethers.parseEther("300")); // power
       await mining.connect(alice).deposit(ethers.parseEther("200"), ZERO);
       info = await mining.userInfo(alice.address);
-      expect(info[2]).to.equal(ethers.parseEther("2500")); // (300+200)×5
+      expect(info[4]).to.equal(ethers.parseEther("500")); // 算力累加
     });
 
-    it("动态额度耗尽停发收益，复投恢复（v8 修复：产出按 USDT 等值折算）", async function () {
-      const { mining, deflation, usdt, pool, alice } = await deployFixture();
-      await fundUsdt(usdt, alice, ethers.parseEther("100"), await mining.getAddress());
-      await mining.connect(alice).deposit(ethers.parseEther("100"), ZERO); // quota 500
+    it("算力即额度：兑换不得超过算力现值，且不消耗算力", async function () {
+      const { mining, usdt, alice } = await deployFixture();
+      await fundUsdt(usdt, alice, ethers.parseEther("300"), await mining.getAddress());
+      await mining.connect(alice).deposit(ethers.parseEther("100"), ZERO); // 算力 100
 
-      // 每日快照（全网算力 100）
-      await deflation.dailySnapshot(ethers.parseEther("100"));
-      const day = BigInt(Math.floor(Date.now() / 1000 / 86400));
-      await mining.connect(alice).claimReward(day);
-      // v8 修复：产出 100000e18 ZYT → 额度消耗 = 100000e18 × price / 1e18（按快照锁定价 0.00001 = 1U）
-      // 修复前错误累加 100000（ZYT 数）→ 误判额度耗尽；修复后仅记 USDT 等值
+      // 兑换 150 > 算力 100 → 拒
+      await expect(mining.connect(alice).convertPowerToZyt(ethers.parseEther("150")))
+        .to.be.revertedWith("Mining: over power quota");
+
+      // 兑换 100 成功，withdrawTotal 达 1 倍
+      await mining.connect(alice).convertPowerToZyt(ethers.parseEther("100"));
       let info = await mining.userInfo(alice.address);
-      const price = await pool.getTradePrice();
-      const usdtEquivalent = (ethers.parseEther("100000") * price) / 10n ** 18n;
-      expect(info[3]).to.equal(usdtEquivalent);
-      // 额度 500U 未耗尽（修复核心：不再误判）
-      expect(info[3]).to.be.lt(ethers.parseEther("500"));
+      expect(info[1]).to.equal(ethers.parseEther("100")); // withdrawTotal
+      // 算力不被消耗，仍为 100
+      expect(info[4]).to.equal(ethers.parseEther("100"));
 
-      // 快进 1 天，再入金 500U → quota = (100+500)×5 = 3000
-      await ethers.provider.send("evm_increaseTime", [DAY]);
-      await ethers.provider.send("evm_mine", []);
-      await fundUsdt(usdt, alice, ethers.parseEther("500"), await mining.getAddress());
-      await mining.connect(alice).deposit(ethers.parseEther("500"), ZERO);
-      info = await mining.userInfo(alice.address);
-      expect(info[2]).to.equal(ethers.parseEther("3000"));
+      // 再兑换 100 → 已兑换额 200 > 算力 100 → 拒
+      await expect(mining.connect(alice).convertPowerToZyt(ethers.parseEther("100")))
+        .to.be.revertedWith("Mining: over power quota");
     });
 
-    it("静态 2 倍出局：累计提取 ≥ 2×入金后停发", async function () {
-      const { mining, usdt, zyt, pool, alice } = await deployFixture();
-      await fundUsdt(usdt, alice, ethers.parseEther("100"), await mining.getAddress());
+    it("静态 2 倍出局：累计兑换达 2×入金后停发算力", async function () {
+      const { mining, usdt, alice } = await deployFixture();
+      await fundUsdt(usdt, alice, ethers.parseEther("300"), await mining.getAddress());
       await mining.connect(alice).deposit(ethers.parseEther("100"), ZERO);
-      const minted = await zyt.balanceOf(alice.address);
-      expect(minted).to.be.gt(0n);
 
-      // 卖出全部（≈60U）→ withdrawTotal ≈ 60 < 200，未出局
-      await zyt.connect(alice).approve(await pool.getAddress(), ethers.MaxUint256);
-      await mining.connect(alice).sellZyt(minted);
+      // 先兑换 1 倍
+      await mining.connect(alice).convertPowerToZyt(ethers.parseEther("100"));
       let info = await mining.userInfo(alice.address);
-      expect(info[1]).to.be.lt(ethers.parseEther("200"));
-      expect(info[6]).to.equal(false);
+      expect(info[1]).to.equal(ethers.parseEther("100"));
+      expect(info[6]).to.equal(false); // 未出局
 
-      // 继续入金并卖出，累计提取逼近 2×入金（200U）
-      // 为构造出局需要池子有足够 USDT；此处验证核心路径：提取额累计与出局标记逻辑
-      await fundUsdt(usdt, alice, ethers.parseEther("500"), await mining.getAddress());
-      await mining.connect(alice).deposit(ethers.parseEther("500"), ZERO);
+      // 快进 70 天，算力复利至约 200（1.01^70 ≈ 2.007）
+      await ethers.provider.send("evm_increaseTime", [DAY * 70]);
+      await ethers.provider.send("evm_mine", []);
+      const powerNow = await mining.powerOf(alice.address);
+      expect(powerNow).to.be.gte(ethers.parseEther("200"));
+
+      // 兑换至累计 2 倍 → 出局
+      await mining.connect(alice).convertPowerToZyt(ethers.parseEther("100"));
       info = await mining.userInfo(alice.address);
-      expect(info[0]).to.equal(ethers.parseEther("600"));
-      expect(info[2]).to.equal(ethers.parseEther("3000")); // quota 刷新
+      expect(info[1]).to.equal(ethers.parseEther("200"));
+      expect(info[6]).to.equal(true); // isExited
+      // 出局后算力归零
+      expect(await mining.powerOf(alice.address)).to.equal(0n);
     });
+
   });
 
   describe("ZYTReferral 推荐分账", function () {
-    it("B 入金时 A 获得 7% 推荐奖励，计入动态额度消耗", async function () {
+    it("B 入金时 A 获得 7% 推荐奖励（USDT 直发，不增发 ZYT）", async function () {
       const { mining, usdt, zyt, alice, bob } = await deployFixture();
       // A 先入金成为上级
       await fundUsdt(usdt, alice, ethers.parseEther("100"), await mining.getAddress());
       await mining.connect(alice).deposit(ethers.parseEther("100"), ZERO);
-      const balA0 = await zyt.balanceOf(alice.address);
+      const usdtA0 = await usdt.balanceOf(alice.address);
+      const zytA0 = await zyt.balanceOf(alice.address);
 
       // B 带 A 推荐入金 100U
       await fundUsdt(usdt, bob, ethers.parseEther("100"), await mining.getAddress());
       await mining.connect(bob).deposit(ethers.parseEther("100"), alice.address);
 
-      // A 收到 7% 推荐奖励（v7：按当日快照锁定价 0.00001 换算）：7U → 7e5 ZYT
-      const refReward = ethers.parseEther("7") * 10n ** 18n / ethers.parseEther("0.00001");
-      expect(await zyt.balanceOf(alice.address)).to.equal(balA0 + refReward);
-      // A 动态额度消耗 = 7U（按 USDT 计）
-      const info = await mining.userInfo(alice.address);
-      expect(info[3]).to.equal(ethers.parseEther("7"));
+      // A 收到 7% USDT 奖励 = 7U
+      expect(await usdt.balanceOf(alice.address)).to.equal(usdtA0 + ethers.parseEther("7"));
+      // ZYT 不增发（奖励改走 USDT）
+      expect(await zyt.balanceOf(alice.address)).to.equal(zytA0);
     });
 
     it("v16 决策 21：直推 1 人，第 2/11 代入金时根节点无奖励（可拿代数=直推人数）", async function () {
@@ -344,7 +396,7 @@ describe("ZYT 合约体系（方案 v7）", function () {
       // 根节点 alice 自入金成为上级
       await fundUsdt(usdt, alice, ethers.parseEther("100"), await mining.getAddress());
       await mining.connect(alice).deposit(ethers.parseEther("100"), ZERO);
-      const balRoot = async () => await zyt.balanceOf(alice.address);
+      const balRoot = async () => await usdt.balanceOf(alice.address);
 
       // 建立 11 代链：B1(ref=alice) ← B2(ref=B1) ← ... ← B11(ref=B10)，逐层入金
       let prev = alice.address;
@@ -352,17 +404,17 @@ describe("ZYT 合约体系（方案 v7）", function () {
         const u = signers[k];
         await fundUsdt(usdt, u, ethers.parseEther("100"), await mining.getAddress());
         const rootBefore = await balRoot();
-        const directParentBefore = k === 0 ? 0n : await zyt.balanceOf(signers[k - 1].address);
+        const directParentBefore = k === 0 ? 0n : await usdt.balanceOf(signers[k - 1].address);
         await mining.connect(u).deposit(ethers.parseEther("100"), prev);
 
         // 根节点 alice 是第 k+1 代上级；其直推人数恒为 1，层级 ≥2 时应被拦（2% 与 0.5% 档均拦）
         if (k >= 1) {
           expect(await balRoot(), `第 ${k + 1} 代入金后根节点不应有奖励`).to.equal(rootBefore);
         }
-        // 直推上级（第 1 代）恒拿 7% = 7e5 ZYT（快照锁定价 0.00001U 换算）
+        // 直推上级（第 1 代）恒拿 7% = 7 USDT（奖励改为 USDT 直发）
         if (k >= 1) {
-          const expect7 = ethers.parseEther("7") * 10n ** 18n / ethers.parseEther("0.00001");
-          expect(await zyt.balanceOf(signers[k - 1].address) - directParentBefore, `第 ${k + 1} 代入金直推上级应拿 7%`).to.equal(expect7);
+          const expect7 = ethers.parseEther("7");
+          expect(await usdt.balanceOf(signers[k - 1].address) - directParentBefore, `第 ${k + 1} 代入金直推上级应拿 7%`).to.equal(expect7);
         }
         prev = u.address;
       }
@@ -375,26 +427,26 @@ describe("ZYT 合约体系（方案 v7）", function () {
       await pool.setBuyWhitelist(dave.address, true); // dave fixture 故意未加白名单
       await fundUsdt(usdt, alice, ethers.parseEther("100"), await mining.getAddress());
       await mining.connect(alice).deposit(ethers.parseEther("100"), ZERO);
-      const balA0 = await zyt.balanceOf(alice.address);
+      const balA0 = await usdt.balanceOf(alice.address);
 
       // alice 直推 bob、carol 两人 → downlineCount[alice]=2
       await fundUsdt(usdt, bob, ethers.parseEther("100"), await mining.getAddress());
       await mining.connect(bob).deposit(ethers.parseEther("100"), alice.address);
       await fundUsdt(usdt, carol, ethers.parseEther("100"), await mining.getAddress());
       await mining.connect(carol).deposit(ethers.parseEther("100"), alice.address);
-      const balA1 = await zyt.balanceOf(alice.address);
-      // bob、carol 各拿 7%（两人都是第 1 代）
-      const expect7 = ethers.parseEther("7") * 10n ** 18n / ethers.parseEther("0.00001");
+      const balA1 = await usdt.balanceOf(alice.address);
+      // bob、carol 各拿 7%（两人都是第 1 代），奖励以 USDT 直发
+      const expect7 = ethers.parseEther("7");
       expect(balA1 - balA0).to.equal(expect7 * 2n);
 
-      // dave 入金 ref=bob：dave 链 = bob(1代) → alice(2代)；alice downlineCount=2 ≥ 2 → 解锁拿 2% = 2e5 ZYT
+      // dave 入金 ref=bob：dave 链 = bob(1代) → alice(2代)；alice downlineCount=2 ≥ 2 → 解锁拿 2% = 2 USDT
       await fundUsdt(usdt, dave, ethers.parseEther("100"), await mining.getAddress());
-      const balBobBefore = await zyt.balanceOf(bob.address);
+      const balBobBefore = await usdt.balanceOf(bob.address);
       await mining.connect(dave).deposit(ethers.parseEther("100"), bob.address);
-      const expect2 = ethers.parseEther("2") * 10n ** 18n / ethers.parseEther("0.00001");
-      expect(await zyt.balanceOf(alice.address) - balA1, "根节点直推 2 人应解锁第 2 代 2%").to.equal(expect2);
+      const expect2 = ethers.parseEther("2");
+      expect(await usdt.balanceOf(alice.address) - balA1, "根节点直推 2 人应解锁第 2 代 2%").to.equal(expect2);
       // bob 作为 dave 的直推上级恒拿 7%
-      expect(await zyt.balanceOf(bob.address) - balBobBefore).to.equal(expect7);
+      expect(await usdt.balanceOf(bob.address) - balBobBefore).to.equal(expect7);
     });
   });
 
@@ -403,7 +455,9 @@ describe("ZYT 合约体系（方案 v7）", function () {
       const { mining, usdt, zyt, alice, bob } = await deployFixture();
       await fundUsdt(usdt, alice, ethers.parseEther("100"), await mining.getAddress());
       await mining.connect(alice).deposit(ethers.parseEther("100"), ZERO);
+      await mining.connect(alice).convertPowerToZyt(ethers.parseEther("100")); // 兑换得 ZYT
       const zytOfAlice = await zyt.balanceOf(alice.address);
+      expect(zytOfAlice).to.be.gt(0n);
 
       // 快进 15 天
       await ethers.provider.send("evm_increaseTime", [FIFTEEN_DAYS]);
@@ -431,13 +485,18 @@ describe("ZYT 合约体系（方案 v7）", function () {
   });
 
   describe("v7 买入白名单（防闪电贷）", function () {
-    it("非白名单地址入金被拒绝", async function () {
+    it("非白名单地址买币被拒（入金不受白名单限制）", async function () {
       const { config, pool, usdt, mining, dave } = await deployFixture();
       // 白名单默认开启（config.buyWhitelistEnabled == true）
       expect(await config.buyWhitelistEnabled()).to.equal(true);
       expect(await pool.buyWhitelist(dave.address)).to.equal(false);
       await fundUsdt(usdt, dave, ethers.parseEther("100"), await mining.getAddress());
-      await expect(mining.connect(dave).deposit(ethers.parseEther("100"), ZERO)).to.be.revertedWith("Mining: not whitelisted");
+      // 入金不受白名单限制（创建底池不属于市场买币行为）
+      await mining.connect(dave).deposit(ethers.parseEther("100"), ZERO);
+      expect((await mining.userInfo(dave.address))[0]).to.equal(ethers.parseEther("100"));
+      // 买币（算力兑换）受白名单限制
+      await expect(mining.connect(dave).convertPowerToZyt(ethers.parseEther("60")))
+        .to.be.revertedWith("Mining: not whitelisted");
     });
 
     it("多签添加白名单后可入金；批量添加生效", async function () {
@@ -489,7 +548,9 @@ describe("ZYT 合约体系（方案 v7）", function () {
       const { zyt, mining, usdt, pool, alice } = await deployFixture();
       await fundUsdt(usdt, alice, ethers.parseEther("100"), await mining.getAddress());
       await mining.connect(alice).deposit(ethers.parseEther("100"), ZERO);
+      await mining.connect(alice).convertPowerToZyt(ethers.parseEther("60")); // 兑换得 ZYT
       const zytBal = await zyt.balanceOf(alice.address);
+      expect(zytBal).to.be.gt(0n);
       await zyt.connect(alice).approve(await pool.getAddress(), ethers.MaxUint256);
       await mining.connect(alice).sellZyt(zytBal / 2n);
       const info = await zyt.getSellInfo(alice.address);
@@ -500,12 +561,15 @@ describe("ZYT 合约体系（方案 v7）", function () {
     });
 
     it("userList 去重登记 + 遍历接口可用", async function () {
-      const { zyt, mining, usdt, pool, alice, bob, deployer } = await deployFixture();
+      const { zyt, mining, usdt, pool, alice, bob, deployer, creator, router, lpToken } = await deployFixture();
       await fundUsdt(usdt, alice, ethers.parseEther("100"), await mining.getAddress());
       await mining.connect(alice).deposit(ethers.parseEther("100"), ZERO);
+      await mining.connect(alice).convertPowerToZyt(ethers.parseEther("60"));
       await fundUsdt(usdt, bob, ethers.parseEther("100"), await mining.getAddress());
       await mining.connect(bob).deposit(ethers.parseEther("100"), ZERO);
-      // 铸币即入列表：alice、bob（P2-2 白名单保护：技术 10% 收款方 technicalAddress=deployer 已白名单豁免，不列入用户统计）
+      await mining.connect(bob).convertPowerToZyt(ethers.parseEther("60"));
+      // 兑换 mint 即入列表：alice、bob（P2-2 白名单保护：技术 10% 收款方 technicalAddress=deployer 已白名单豁免，不列入用户统计）
+      // 兑换 mint 即入列表：alice、bob（Router 与 Creator 均已白名单豁免，不列入用户统计）
       expect(await zyt.getUserCount()).to.equal(2n);
       const list = [];
       for (let i = 0; i < 2; i++) list.push((await zyt.getUserAt(i)).toLowerCase());
@@ -523,7 +587,9 @@ describe("ZYT 合约体系（方案 v7）", function () {
       const { mining, usdt, zyt, pool, forceSell, alice } = await deployFixture();
       await fundUsdt(usdt, alice, ethers.parseEther("100"), await mining.getAddress());
       await mining.connect(alice).deposit(ethers.parseEther("100"), ZERO);
+      await mining.connect(alice).convertPowerToZyt(ethers.parseEther("60")); // 兑换得 ZYT
       const zytOfAlice = await zyt.balanceOf(alice.address);
+      expect(zytOfAlice).to.be.gt(0n);
       // 卖出前 soldAmount = 0
       expect(await forceSell.soldAmount(alice.address)).to.equal(0n);
       // 卖出 1/10 到池（真实卖出路径）
@@ -537,7 +603,9 @@ describe("ZYT 合约体系（方案 v7）", function () {
       const { mining, usdt, zyt, pool, forceSell, alice } = await deployFixture();
       await fundUsdt(usdt, alice, ethers.parseEther("100"), await mining.getAddress());
       await mining.connect(alice).deposit(ethers.parseEther("100"), ZERO);
+      await mining.connect(alice).convertPowerToZyt(ethers.parseEther("60")); // 兑换得 ZYT
       const zytOfAlice = await zyt.balanceOf(alice.address);
+      expect(zytOfAlice).to.be.gt(0n);
       await zyt.connect(alice).approve(await pool.getAddress(), ethers.MaxUint256);
       await mining.connect(alice).sellZyt(zytOfAlice / 10n);
       // 池被 checkAndBurn 初始化（记录 firstReceiveTime）属无害行为：
@@ -548,23 +616,110 @@ describe("ZYT 合约体系（方案 v7）", function () {
       expect(poolBal).to.be.gt(0n);
     });
 
-    it("V2：claimDividend 额度消耗按 USDT 等值折算（非 ZYT 数）", async function () {
+    it("claimDividend：按日结算，无阶段门控（阶段 1 亦可提取）", async function () {
       const { mining, pool, deflation, usdt, zyt, alice } = await deployFixture();
       await fundUsdt(usdt, alice, ethers.parseEther("100"), await mining.getAddress());
       await mining.connect(alice).deposit(ethers.parseEther("100"), ZERO);
-      // 制造分红池：快照产生 1% 分红
+      // 当日快照：产生 1% 分红并登记为该日的独立分红池
       await deflation.dailySnapshot(ethers.parseEther("100"));
-      const divPool = await pool.dividendPool();
-      expect(divPool).to.be.gt(0n);
-      const before = (await mining.userInfo(alice.address))[3];
+      const day = BigInt(Math.floor((await ethers.provider.getBlock("latest")).timestamp / 86400));
+      expect((await mining.dailyInfo(day))[2]).to.be.gt(0n); // dividendAmount
+      expect(await pool.dividendPool()).to.be.gt(0n);
+      // 该日尚未结束，当日不可结算
+      await expect(mining.connect(alice).claimDividend()).to.be.revertedWith("Mining: nothing to claim");
+
+      // 次日：alice 为全网唯一算力，独享该日全额分红
+      await ethers.provider.send("evm_increaseTime", [DAY]);
+      await ethers.provider.send("evm_mine", []);
+      const zytBefore = await zyt.balanceOf(alice.address);
       await mining.connect(alice).claimDividend();
-      const after = (await mining.userInfo(alice.address))[3];
-      const diff = after - before;
-      // 修复后：diff = share × price / 1e18（USDT 等值，远小于 share）
-      const price = await pool.getTradePrice();
-      // alice 是全网唯一算力（100），share = divPool 全额
-      expect(diff).to.equal(divPool * price / 10n ** 18n);
-      expect(diff).to.be.lt(divPool); // 折算后远小于 ZYT 数
+      const got = (await zyt.balanceOf(alice.address)) - zytBefore;
+      expect(got).to.equal((await mining.dailyInfo(day))[2]);
+      // 提取后待提余额清零、游标推进
+      expect((await mining.dividendOf(alice.address))[0]).to.equal(0n);
+    });
+
+    it("分红按日隔离：晚入金者不参与其入金前的日分红", async function () {
+      const { mining, deflation, usdt, zyt, alice, bob } = await deployFixture();
+      // 第 1 天：alice 独享全网算力
+      await fundUsdt(usdt, alice, ethers.parseEther("100"), await mining.getAddress());
+      await mining.connect(alice).deposit(ethers.parseEther("100"), ZERO);
+      await deflation.dailySnapshot(ethers.parseEther("100"));
+      const day1 = BigInt(Math.floor((await ethers.provider.getBlock("latest")).timestamp / 86400));
+
+      // 第 2 天：bob 入金；alice 算力复利到 101，全网 201
+      await ethers.provider.send("evm_increaseTime", [DAY]);
+      await ethers.provider.send("evm_mine", []);
+      await fundUsdt(usdt, bob, ethers.parseEther("100"), await mining.getAddress());
+      await mining.connect(bob).deposit(ethers.parseEther("100"), ZERO);
+      await deflation.dailySnapshot(ethers.parseEther("201"));
+      const day2 = BigInt(Math.floor((await ethers.provider.getBlock("latest")).timestamp / 86400));
+
+      // 第 3 天：两人各自提取
+      await ethers.provider.send("evm_increaseTime", [DAY]);
+      await ethers.provider.send("evm_mine", []);
+      const div1 = (await mining.dailyInfo(day1))[2];
+      const div2 = (await mining.dailyInfo(day2))[2];
+      expect(div1).to.be.gt(0n);
+      expect(div2).to.be.gt(0n);
+
+      const aBefore = await zyt.balanceOf(alice.address);
+      await mining.connect(alice).claimDividend();
+      const aGot = (await zyt.balanceOf(alice.address)) - aBefore;
+
+      const bBefore = await zyt.balanceOf(bob.address);
+      await mining.connect(bob).claimDividend();
+      const bGot = (await zyt.balanceOf(bob.address)) - bBefore;
+
+      // alice：第 1 天全额 + 第 2 天 101/201；bob：仅第 2 天 100/201
+      expect(aGot).to.equal(div1 + (div2 * 101n) / 201n);
+      expect(bGot).to.equal((div2 * 100n) / 201n);
+      // 核心：bob 分不到第 1 天的分红（累计池口径下会分走约一半）
+      expect(bGot).to.be.lt(div1);
+    });
+
+    it("出局后仍可提取出局前的历史分红（exitDay 保留历史算力）", async function () {
+      const { mining, deflation, usdt, zyt, config, alice } = await deployFixture();
+      await fundUsdt(usdt, alice, ethers.parseEther("300"), await mining.getAddress());
+      await mining.connect(alice).deposit(ethers.parseEther("100"), ZERO);
+      await deflation.dailySnapshot(ethers.parseEther("100"));
+      const day1 = BigInt(Math.floor((await ethers.provider.getBlock("latest")).timestamp / 86400));
+
+      // 第 2 天构造出局（staticExitMul 置 0）
+      await ethers.provider.send("evm_increaseTime", [DAY]);
+      await ethers.provider.send("evm_mine", []);
+      await config.setUint("staticExitMul", 0);
+      await mining.connect(alice).convertPowerToZyt(1n);
+      expect((await mining.userInfo(alice.address))[6]).to.equal(true); // isExited
+      await config.setUint("staticExitMul", 2);
+
+      // 第 3 天提取：第 1 天的分红仍可结算（出局不清算历史算力）
+      await ethers.provider.send("evm_increaseTime", [DAY]);
+      await ethers.provider.send("evm_mine", []);
+      expect((await mining.userInfo(alice.address))[4]).to.equal(0n); // 出局后当前算力为 0
+      const before = await zyt.balanceOf(alice.address);
+      await mining.connect(alice).claimDividend();
+      const got = (await zyt.balanceOf(alice.address)) - before;
+      expect(got).to.equal((await mining.dailyInfo(day1))[2]); // 唯一算力 → 全额
+    });
+
+    it("复投前须结清历史分红（防 powerDay 更新后历史算力无法回算）", async function () {
+      const { mining, deflation, usdt, alice } = await deployFixture();
+      await fundUsdt(usdt, alice, ethers.parseEther("300"), await mining.getAddress());
+      await mining.connect(alice).deposit(ethers.parseEther("100"), ZERO);
+      await deflation.dailySnapshot(ethers.parseEther("100")); // 该日产生分红
+      // 快进 400 天（超过单次结算上限 365 天）后再复投
+      await ethers.provider.send("evm_increaseTime", [400 * 86400]);
+      await ethers.provider.send("evm_mine", []);
+      await expect(mining.connect(alice).deposit(ethers.parseEther("100"), ZERO)).to.be.revertedWith(
+        "Mining: settle dividend first"
+      );
+      // 先提取（单次最多结算 365 天，游标推进到覆盖今日），复投即恢复
+      await mining.connect(alice).claimDividend();
+      await mining.connect(alice).deposit(ethers.parseEther("100"), ZERO);
+      const info = await mining.userInfo(alice.address);
+      expect(info[0]).to.equal(ethers.parseEther("200")); // depositTotal 累加
+      expect(info[4]).to.be.gt(ethers.parseEther("100")); // 历史算力已复利固化，未丢失
     });
   });
 
@@ -618,6 +773,7 @@ describe("ZYT 合约体系（方案 v7）", function () {
       const { mining, usdt, zyt, alice, bob } = await deployFixture();
       await fundUsdt(usdt, alice, ethers.parseEther("100"), await mining.getAddress());
       await mining.connect(alice).deposit(ethers.parseEther("100"), ZERO);
+      await mining.connect(alice).convertPowerToZyt(ethers.parseEther("100")); // 兑换得 ZYT
       const bal = await zyt.balanceOf(alice.address);
       const amount = ethers.parseEther("1000");
       await zyt.connect(alice).transfer(bob.address, amount);
@@ -628,13 +784,13 @@ describe("ZYT 合约体系（方案 v7）", function () {
 
     it("V7：mintTo 超过 totalSupplyCap 被拒（防无限增发）", async function () {
       const { mining, usdt, config, zyt, alice } = await deployFixture();
-      // 把 cap 压到仅剩 1 枚空间（初始池 21 亿已 mint）
-      await config.setUint("totalSupplyCap", (await zyt.totalSupply()) + 1n);
-      // 通过真实入金路径触发 mintTo → 超 cap 应 revert
       await fundUsdt(usdt, alice, ethers.parseEther("100"), await mining.getAddress());
-      await expect(mining.connect(alice).deposit(ethers.parseEther("100"), ZERO)).to.be.revertedWith("ZYT: supply cap");
-      // 用户 USDT 未丢失（整笔回滚）
-      expect(await usdt.balanceOf(alice.address)).to.equal(ethers.parseEther("100"));
+      await mining.connect(alice).deposit(ethers.parseEther("100"), ZERO);
+      // 入金完成后再压 cap（入金本身会经 Creator 铸币，若先压 cap 会在 deposit 处回滚）
+      await config.setUint("totalSupplyCap", (await zyt.totalSupply()) + 1n);
+      // 兑换路径触发 mintTo → 超 cap 应 revert
+      await expect(mining.connect(alice).convertPowerToZyt(ethers.parseEther("100")))
+        .to.be.revertedWith("ZYT: supply cap");
     });
   });
 
@@ -643,6 +799,7 @@ describe("ZYT 合约体系（方案 v7）", function () {
       const { mining, usdt, zyt, forceSell, alice, bob } = await deployFixture();
       await fundUsdt(usdt, alice, ethers.parseEther("100"), await mining.getAddress());
       await mining.connect(alice).deposit(ethers.parseEther("100"), ZERO);
+      await mining.connect(alice).convertPowerToZyt(ethers.parseEther("100")); // 兑换得 ZYT
       // 快进 15 天（进入窗口 1）
       await ethers.provider.send("evm_increaseTime", [FIFTEEN_DAYS]);
       await ethers.provider.send("evm_mine", []);
@@ -655,6 +812,7 @@ describe("ZYT 合约体系（方案 v7）", function () {
       const { mining, usdt, zyt, forceSell, alice } = await deployFixture();
       await fundUsdt(usdt, alice, ethers.parseEther("100"), await mining.getAddress());
       await mining.connect(alice).deposit(ethers.parseEther("100"), ZERO);
+      await mining.connect(alice).convertPowerToZyt(ethers.parseEther("100")); // 兑换得 ZYT
       const bal = await zyt.balanceOf(alice.address);
       // 快进 15 天
       await ethers.provider.send("evm_increaseTime", [FIFTEEN_DAYS]);
@@ -664,6 +822,38 @@ describe("ZYT 合约体系（方案 v7）", function () {
       const expectedBurn = (bal * 20n) / 100n;
       expect(await zyt.balanceOf(alice.address)).to.equal(bal - expectedBurn);
       // 事件已发（余额验证等价，跳过事件断言）
+    });
+
+    it("P1-13：settleExpired 同窗口重复调用不再销毁（防 Keeper 递归抽水）", async function () {
+      const { mining, usdt, zyt, forceSell, alice } = await deployFixture();
+      await fundUsdt(usdt, alice, ethers.parseEther("100"), await mining.getAddress());
+      await mining.connect(alice).deposit(ethers.parseEther("100"), ZERO);
+      await mining.connect(alice).convertPowerToZyt(ethers.parseEther("100"));
+      const bal = await zyt.balanceOf(alice.address);
+
+      await ethers.provider.send("evm_increaseTime", [FIFTEEN_DAYS]);
+      await ethers.provider.send("evm_mine", []);
+
+      // 首次结算：烧掉余额的 20%，窗口 1 位图置位
+      const burn1 = (bal * 20n) / 100n;
+      await forceSell.settleExpired(alice.address);
+      const afterFirst = bal - burn1;
+      expect(await zyt.balanceOf(alice.address)).to.equal(afterFirst);
+      expect(await forceSell.settledWindows(alice.address)).to.equal(1n);
+
+      // 同窗口重复调用：余额必须保持不变（修复前会继续烧 20% / 16% / 12.8% ...）
+      await forceSell.settleExpired(alice.address);
+      expect(await zyt.balanceOf(alice.address)).to.equal(afterFirst);
+      await forceSell.settleExpired(alice.address);
+      expect(await zyt.balanceOf(alice.address)).to.equal(afterFirst);
+
+      // 进入窗口 2 后可再次结算，累计目标 30%，位图变为 bit0|bit1
+      await ethers.provider.send("evm_increaseTime", [FIFTEEN_DAYS]);
+      await ethers.provider.send("evm_mine", []);
+      await forceSell.settleExpired(alice.address);
+      expect(await forceSell.settledWindows(alice.address)).to.equal(3n);
+      const burn2 = (afterFirst * 30n) / 100n;
+      expect(await zyt.balanceOf(alice.address)).to.equal(afterFirst - burn2);
     });
 
     it("V8：settleExpired 非 keeper/owner 被拒", async function () {
@@ -680,14 +870,19 @@ describe("ZYT 合约体系（方案 v7）", function () {
       expect(await config.baseSlippage()).to.equal(800);
     });
 
-    it("V13：claimDividend 同一天只能领取一次", async function () {
+    it("V13：claimDividend 重复调用不重复发币（按日结算游标推进）", async function () {
       const { mining, pool, deflation, usdt, alice } = await deployFixture();
       await fundUsdt(usdt, alice, ethers.parseEther("100"), await mining.getAddress());
       await mining.connect(alice).deposit(ethers.parseEther("100"), ZERO);
       await deflation.dailySnapshot(ethers.parseEther("100")); // 产生分红
       expect(await pool.dividendPool()).to.be.gt(0n);
+      // 次日提取
+      await ethers.provider.send("evm_increaseTime", [DAY]);
+      await ethers.provider.send("evm_mine", []);
       await mining.connect(alice).claimDividend();
-      await expect(mining.connect(alice).claimDividend()).to.be.revertedWith("Mining: claimed today");
+      expect((await mining.dividendOf(alice.address))[0]).to.equal(0n); // 待提已清空
+      // 同日再次调用：无新的已结束日可结算，待提为 0
+      await expect(mining.connect(alice).claimDividend()).to.be.revertedWith("Mining: nothing to claim");
     });
   });
 
@@ -705,6 +900,7 @@ describe("ZYT 合约体系（方案 v7）", function () {
       const { mining, usdt, zyt, pool, alice } = await deployFixture();
       await fundUsdt(usdt, alice, ethers.parseEther("100"), await mining.getAddress());
       await mining.connect(alice).deposit(ethers.parseEther("100"), ZERO);
+      await mining.connect(alice).convertPowerToZyt(ethers.parseEther("60")); // 兑换得 ZYT
       const zytOfAlice = await zyt.balanceOf(alice.address);
       await zyt.connect(alice).approve(await pool.getAddress(), ethers.MaxUint256);
       const sellAmt = zytOfAlice / 10n;
@@ -726,93 +922,216 @@ describe("ZYT 合约体系（方案 v7）", function () {
   });
 
   describe("第二轮深度检测修复（P1-1/P1-2）", function () {
-    it("P1-1：禁止领取入金日之前的产出（回溯领取修复）", async function () {
-      const { mining, deflation, usdt, alice, bob } = await deployFixture();
-      // alice 在 day D 入金（powerDay = D）
-      await fundUsdt(usdt, alice, ethers.parseEther("100"), await mining.getAddress());
-      await mining.connect(alice).deposit(ethers.parseEther("100"), ZERO);
-      // 快照记录 day D 的产出与全网算力
-      await deflation.dailySnapshot(ethers.parseEther("100"));
-      const dayD = BigInt(Math.floor((await ethers.provider.getBlock("latest")).timestamp / 86400));
-
-      // 快进 1 天：bob 在 day D+1 入金（powerDay = D+1）
-      await ethers.provider.send("evm_increaseTime", [DAY]);
-      await ethers.provider.send("evm_mine", []);
-      await fundUsdt(usdt, bob, ethers.parseEther("100"), await mining.getAddress());
-      await mining.connect(bob).deposit(ethers.parseEther("100"), ZERO);
-
-      // bob 试图回溯领取入金前 day D 的产出 → 拒绝（修复核心断言）
-      await expect(mining.connect(bob).claimReward(dayD)).to.be.revertedWith("Mining: before deposit");
-      // alice（day D 入金）领取 day D 产出正常
-      await mining.connect(alice).claimReward(dayD);
-    });
-
-    it("P1-2：动态额度耗尽后 claimDividend 被拒（分红额度修复）", async function () {
-      const { mining, deflation, usdt, alice, bob } = await deployFixture();
-      // alice 入金 100U → 动态额度 = 500U
-      await fundUsdt(usdt, alice, ethers.parseEther("100"), await mining.getAddress());
-      await mining.connect(alice).deposit(ethers.parseEther("100"), ZERO);
-      // 分红池入账（通缩 1% 分红）
-      await deflation.dailySnapshot(ethers.parseEther("100"));
-
-      // bob 连续 15 次入金 500U 且 ref=alice → alice 累计推荐奖励 15×35U = 525U > 500U 额度耗尽
-      await fundUsdt(usdt, bob, ethers.parseEther("7500"), await mining.getAddress());
-      for (let i = 0; i < 15; i++) {
-        await mining.connect(bob).deposit(ethers.parseEther("500"), alice.address);
-      }
-      const info = await mining.userInfo(alice.address);
-      expect(info[3]).to.be.gte(ethers.parseEther("500")); // withdrawn >= quota，前置确认
-
-      // 额度耗尽后 claimDividend → 拒绝（修复核心断言）
-      await expect(mining.connect(alice).claimDividend()).to.be.revertedWith("Mining: quota exhausted");
-    });
-
-    it("P2-1：claimReward 领取成功后标记置位，同日二次领取被拒（状态后置修复回归）", async function () {
+    it("产出停用：claimReward 一律 revert，全网算力仍照常记录（分红分母）", async function () {
       const { mining, deflation, usdt, alice } = await deployFixture();
       await fundUsdt(usdt, alice, ethers.parseEther("100"), await mining.getAddress());
       await mining.connect(alice).deposit(ethers.parseEther("100"), ZERO);
+      // 每日快照仍记录全网算力，分红（claimDividend）依赖该值作分母
       await deflation.dailySnapshot(ethers.parseEther("100"));
       const day = BigInt(Math.floor((await ethers.provider.getBlock("latest")).timestamp / 86400));
 
-      // 首次领取成功（mint 成功后才置位标记）
-      await mining.connect(alice).claimReward(day);
-      // 同日二次领取 → 标记已置位，被拒（验证状态变更后置未破坏防重复）
-      await expect(mining.connect(alice).claimReward(day)).to.be.revertedWith("Mining: claimed");
+      // 产出停用：不再新增 ZYT 供应
+      expect(await mining.dailyReleaseAmount()).to.equal(0n);
+      const info = await mining.dailyInfo(day);
+      expect(info[0]).to.equal(ethers.parseEther("100")); // totalPower 照常记录
+      expect(info[1]).to.equal(0n); // releaseAmount 恒为 0
+
+      await expect(mining.connect(alice).claimReward(day)).to.be.revertedWith("Mining: reward disabled");
+      // 任意 day 参数同样被拒（函数体已停用，不做日期校验）
+      await expect(mining.connect(alice).claimReward(0)).to.be.revertedWith("Mining: reward disabled");
+    });
+
+    it("P1-2：推荐奖励改为 USDT 直发（额度机制已取消）", async function () {
+      const { mining, usdt, alice, bob } = await deployFixture();
+      await fundUsdt(usdt, alice, ethers.parseEther("100"), await mining.getAddress());
+      await mining.connect(alice).deposit(ethers.parseEther("100"), ZERO);
+      const usdtA0 = await usdt.balanceOf(alice.address);
+
+      // bob 连续 5 次入金 500U 且 ref=alice → alice 每次拿 7% = 35U，累计 175U
+      await fundUsdt(usdt, bob, ethers.parseEther("2500"), await mining.getAddress());
+      for (let i = 0; i < 5; i++) {
+        await mining.connect(bob).deposit(ethers.parseEther("500"), alice.address);
+      }
+      expect(await usdt.balanceOf(alice.address)).to.equal(usdtA0 + ethers.parseEther("175"));
     });
 
     it("P1-3：静态出局用户复投自动重置出局状态（决策 A）", async function () {
       const { mining, config, usdt, zyt, pool, deflation, alice } = await deployFixture();
-      await fundUsdt(usdt, alice, ethers.parseEther("100"), await mining.getAddress());
+      await fundUsdt(usdt, alice, ethers.parseEther("300"), await mining.getAddress());
       await mining.connect(alice).deposit(ethers.parseEther("100"), ZERO);
 
-      // 临时调 staticExitMul=0 构造出局（withdrawTotal>=depositTotal×0 恒真），卖出 1 wei 即触发
+      // 临时调 staticExitMul=0 构造出局（withdrawTotal >= depositTotal×0 恒真），兑换 1 wei 即触发
       await config.setUint("staticExitMul", 0);
-      await zyt.connect(alice).approve(await pool.getAddress(), ethers.MaxUint256);
-      await mining.connect(alice).sellZyt(1n);
+      await mining.connect(alice).convertPowerToZyt(1n);
       expect((await mining.userInfo(alice.address))[6]).to.equal(true); // isExited=true
 
       // 调回 2 倍后复投 → 出局状态重置（withdrawTotal 保留不清零）
       await config.setUint("staticExitMul", 2);
-      await fundUsdt(usdt, alice, ethers.parseEther("100"), await mining.getAddress());
       await mining.connect(alice).deposit(ethers.parseEther("100"), ZERO);
       expect((await mining.userInfo(alice.address))[6]).to.equal(false); // 复投后重置
 
-      // 复投后算力恢复，可正常领取产出（不再 exited）
-      await deflation.dailySnapshot(ethers.parseEther("100"));
-      const day = BigInt(Math.floor((await ethers.provider.getBlock("latest")).timestamp / 86400));
-      await mining.connect(alice).claimReward(day);
+      // 复投后算力恢复且未出局（产出已停用，此处只断言状态）
+      const info = await mining.userInfo(alice.address);
+      expect(info[4]).to.be.gt(0n); // power > 0
+      expect(info[6]).to.equal(false); // 未出局
     });
 
     it("P2-2：营销/技术地址白名单豁免强制卖出初始化（决策 A 保护）", async function () {
       const { mining, usdt, zyt, pool, forceSell, deployer, alice } = await deployFixture();
       await fundUsdt(usdt, alice, ethers.parseEther("100"), await mining.getAddress());
       await mining.connect(alice).deposit(ethers.parseEther("100"), ZERO);
+      await mining.connect(alice).convertPowerToZyt(ethers.parseEther("60")); // 兑换得 ZYT
       // 卖出 → 滑点 30% 营销转给 marketAddress=deployer（白名单）→ 不应启动强制卖出窗口
       const bal = await zyt.balanceOf(alice.address);
+      expect(bal).to.be.gt(0n);
       await zyt.connect(alice).approve(await pool.getAddress(), ethers.MaxUint256);
       await mining.connect(alice).sellZyt(bal);
       expect(await forceSell.initialized(deployer.address)).to.equal(false);
       expect(await forceSell.firstReceiveTime(deployer.address)).to.equal(0n);
+    });
+
+    it("P1-7：转账按快照价双向记账，提取额度随币转移（额度守恒）", async function () {
+      const { mining, pool, usdt, zyt, alice, bob } = await deployFixture();
+      await fundUsdt(usdt, alice, ethers.parseEther("500"), await mining.getAddress());
+      await mining.connect(alice).deposit(ethers.parseEther("500"), ZERO);
+      await mining.connect(alice).convertPowerToZyt(ethers.parseEther("400"));
+      const bal = await zyt.balanceOf(alice.address);
+      const price = await pool.getTradePrice();
+
+      // 转账前：alice 提取额 = 兑换额；bob 无任何额度
+      expect((await mining.userInfo(alice.address))[1]).to.equal(ethers.parseEther("400"));
+      let tv = await mining.transferValueOf(bob.address);
+      expect(tv[0]).to.equal(0n);
+      expect(tv[1]).to.equal(0n);
+
+      // 转出 80% 余额（留 20% 覆盖 10% 转账税）
+      const amount = (bal * 80n) / 100n;
+      const expectUsdt = (amount * price) / 10n ** 18n;
+      expect(expectUsdt).to.be.gt(0n);
+      await zyt.connect(alice).transfer(bob.address, amount);
+
+      // 转出方：提取额按快照价折算递增（转账视同提取）
+      expect((await mining.userInfo(alice.address))[1]).to.equal(ethers.parseEther("400") + expectUsdt);
+      // 接收方：受赠额度建立，提取上限 = 入金×2 + 受赠 = 受赠（bob 零入金）
+      tv = await mining.transferValueOf(bob.address);
+      expect(tv[0]).to.equal(expectUsdt);
+      expect(tv[1]).to.equal(expectUsdt);
+    });
+
+    it("P1-8：零入金地址收到币后受静态出局约束（不再永久绕过）", async function () {
+      const { mining, pool, usdt, zyt, deflation, alice, bob, deployer } = await deployFixture();
+      await fundUsdt(usdt, alice, ethers.parseEther("500"), await mining.getAddress());
+      await mining.connect(alice).deposit(ethers.parseEther("500"), ZERO);
+      await mining.connect(alice).convertPowerToZyt(ethers.parseEther("400"));
+      const bal = await zyt.balanceOf(alice.address);
+
+      // 转给零入金地址 bob（depositTotal 恒为 0）
+      await zyt.connect(alice).transfer(bob.address, (bal * 80n) / 100n);
+      expect((await mining.userInfo(bob.address))[0]).to.equal(0n); // 确认 bob 零入金
+      const tv = await mining.transferValueOf(bob.address);
+      expect(tv[0]).to.be.gt(0n);
+      expect(tv[1]).to.equal(tv[0]); // 上限 = 受赠值
+
+      // 推高池 USDT（6 次 500U 入金）抬升快照价，使卖出折算值超过受赠上限
+      for (let i = 0; i < 6; i++) {
+        await fundUsdt(usdt, deployer, ethers.parseEther("500"), await mining.getAddress());
+        await mining.connect(deployer).deposit(ethers.parseEther("500"), ZERO);
+      }
+      await deflation.dailySnapshot(0);
+
+      const bobBal = await zyt.balanceOf(bob.address);
+      await zyt.connect(bob).approve(await pool.getAddress(), ethers.MaxUint256);
+      await mining.connect(bob).sellZyt(bobBal);
+
+      // 提取额越过受赠上限 → 出局（旧逻辑下 depositTotal==0 早退，恒不出局）
+      expect((await mining.userInfo(bob.address))[6]).to.equal(true);
+    });
+
+    it("P1-9：强制卖出应卖量以转账前余额为基数（大额转出不放水）", async function () {
+      const { mining, usdt, zyt, alice, bob } = await deployFixture();
+      await fundUsdt(usdt, alice, ethers.parseEther("500"), await mining.getAddress());
+      await mining.connect(alice).deposit(ethers.parseEther("500"), ZERO);
+      await mining.connect(alice).convertPowerToZyt(ethers.parseEther("400"));
+      const bal = await zyt.balanceOf(alice.address);
+
+      // 快进 15 天：进入第 1 个窗口（累计应卖 20%）
+      await ethers.provider.send("evm_increaseTime", [15 * 86400 + 1]);
+      await ethers.provider.send("evm_mine", []);
+
+      // 转出 18% 余额：修复后门槛 = 转账前余额 × 20% > 18%，不足 2% → 触发销毁
+      // 若按转账后余额（82%）算，门槛仅 16.4%，18% 已达标，不会销毁
+      const amount = (bal * 18n) / 100n;
+      const before = await zyt.balanceOf(alice.address);
+      await zyt.connect(alice).transfer(bob.address, amount);
+      const delta = before - (await zyt.balanceOf(alice.address));
+      const tax = (amount * 10n) / 100n; // 双非白名单转账税 10%
+      expect(delta).to.be.gt(amount + tax);
+    });
+
+    it("P1-11：储备池的 GST 只能流向 Creator（1:1 释放强制化）", async function () {
+      const { gst, creator, deployer, alice } = await deployFixture();
+      const creatorAddr = await creator.getAddress();
+      expect(await gst.reserve()).to.equal(deployer.address);
+      expect(await gst.creator()).to.equal(creatorAddr);
+      expect(await gst.balanceOf(deployer.address)).to.be.gt(0n); // 储备池持有全量剩余 GST
+
+      // 1. 储备池 → 白名单地址：被拒（白名单不再是储备池的出口）
+      await gst.setTransferAllowed(alice.address, true);
+      await expect(gst.connect(deployer).transfer(alice.address, 1n)).to.be.revertedWith(
+        "GST: reserve outflow restricted"
+      );
+
+      // 2. 储备池 → Creator：放行（唯一出口，按入金量取用）
+      const before = await gst.balanceOf(creatorAddr);
+      await gst.connect(deployer).transfer(creatorAddr, 100n);
+      expect(await gst.balanceOf(creatorAddr)).to.equal(before + 100n);
+
+      // 3. 储备池 → 黑洞：恒放行（Creator 兑换 ZYT 时的退出流通路径）
+      await gst.connect(deployer).transfer(await gst.blackHole(), 100n);
+    });
+
+    it("P1-12：追加入金固化已累积复利，不清零老算力", async function () {
+      const { mining, usdt, alice } = await deployFixture();
+      /** 与合约 ZYTCompute.powerWithCompound 同口径：日复利 1%，整数运算 */
+      const compound = (base, days) => {
+        let p = base;
+        for (let i = 0; i < days; i++) p = p + (p * 100n) / 10000n;
+        return p;
+      };
+
+      await fundUsdt(usdt, alice, ethers.parseEther("1000"), await mining.getAddress());
+      await mining.connect(alice).deposit(ethers.parseEther("500"), ZERO);
+
+      // 快进 30 天：算力按日复利增长
+      await ethers.provider.send("evm_increaseTime", [30 * 86400]);
+      await ethers.provider.send("evm_mine", []);
+      const power30 = compound(ethers.parseEther("500"), 30);
+      expect((await mining.userInfo(alice.address))[4]).to.equal(power30);
+
+      // 追加入金 500U
+      await fundUsdt(usdt, alice, ethers.parseEther("500"), await mining.getAddress());
+      await mining.connect(alice).deposit(ethers.parseEther("500"), ZERO);
+
+      // 修复后：老算力固化到今日（power30）再加新算力 500
+      // 修复前：powerBase 直接变为 1000，此前 30 天复利全部丢失
+      const after = (await mining.userInfo(alice.address))[4];
+      expect(after).to.equal(power30 + ethers.parseEther("500"));
+      expect(after).to.be.gt(ethers.parseEther("1000"));
+    });
+
+    it("P1-7/P1-8：isStaticExited 边界（受赠计入上限，零入金不早退）", async function () {
+      const { compute } = await deployFixture();
+      // 零入金 + 零受赠：无任何额度来源，不判出局
+      expect(await compute.isStaticExited(0n, 0n, 2n, 0n)).to.equal(false);
+      expect(await compute.isStaticExited(1000n, 0n, 2n, 0n)).to.equal(false);
+      // 零入金 + 有受赠：上限即受赠值
+      expect(await compute.isStaticExited(99n, 0n, 2n, 100n)).to.equal(false);
+      expect(await compute.isStaticExited(100n, 0n, 2n, 100n)).to.equal(true);
+      // 有入金 + 有受赠：上限 = 入金 × 倍数 + 受赠
+      expect(await compute.isStaticExited(299n, 100n, 2n, 100n)).to.equal(false);
+      expect(await compute.isStaticExited(300n, 100n, 2n, 100n)).to.equal(true);
+      // 出局倍数置 0（P1-3 构造用例）：不得早退，任何提取即到顶
+      expect(await compute.isStaticExited(1n, 100n, 0n, 0n)).to.equal(true);
     });
   });
 });

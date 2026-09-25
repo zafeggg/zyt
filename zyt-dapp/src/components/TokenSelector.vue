@@ -48,7 +48,6 @@ const emit = defineEmits<{
 const tokens: TokenOption[] = [
   { symbol: "ZYT", name: "众赢币", color: "#f5c15d" },
   { symbol: "USDT", name: "USDT", color: "#26a17b" },
-  { symbol: "GST", name: "古水币", color: "#378add", disabled: true },
   { symbol: "BNB", name: "BNB", color: "#f0b90b", disabled: true },
 ];
 

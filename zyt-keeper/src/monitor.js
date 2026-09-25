@@ -51,13 +51,23 @@ export class Monitor {
     await notify(`[ZYT Monitor][${rule}] ${message}`);
   }
 
-  /** 周期检查（index.js 定时调用）：R1/R3/R4/R5 */
+  /** 周期检查（index.js 定时调用）：R1/R3/R4/R5 + 池状态同步 */
   async checkOnce() {
-    // 链上只读：底池 USDT + 当前滑点
-    const [poolUsdt, slippage] = await Promise.all([
+    // 链上只读：池状态全量（v16：monitor 顺带把池状态写回 pool_state）
+    // 背景：/stats 读 pool_state 表，该表原先仅由 reconcile（启动时 + 每日快照）写入，池数据最长滞后 24h；
+    //       监控本身每 intervalMs 就要读链上，顺路同步一次代价极低
+    // v9：pool_gst/snapshot_gst 为遗留列（v8 簿记口径），统一写 '0'，真池数据 = pair 储备
+    const [poolZyt, poolUsdt, peakUsdt, price, stage, slippage] = await Promise.all([
+      this.pool.poolZYT(),
       this.pool.poolUSDT(),
+      this.pool.peakPoolUSDT(),
+      this.pool.getPrice(),
+      this.pool.getStage(),
       this.pool.getCurrentSlippage(),
     ]);
+
+    // ---- v16 池状态同步（与 ledger.reconcile 同口径） ----
+    await this._syncPoolState({ poolZyt, poolUsdt, peakUsdt, price, stage, slippage });
 
     // ---- R1 底池突变（相对上次监控值；首次仅记基线） ----
     if (this.lastPoolUsdt !== null && this.lastPoolUsdt > 0n) {
@@ -74,13 +84,13 @@ export class Monitor {
     }
     this.lastPoolUsdt = poolUsdt;
 
-    // ---- R3 滑点档位跳变（升高=底池GST被抽血） ----
+    // ---- R3 滑点档位跳变（升高=池U较峰值回落，下跌控盘触发） ----
     // 注意：getCurrentSlippage() 返回 uint256 → ethers 解析为 BigInt，算术需显式转换
     const slipPct = Number(slippage) / 100;
     if (this.lastSlippage !== null && slippage > this.lastSlippage) {
       await this._alert(
         "R3-SLIPPAGE-JUMP",
-        `滑点档位升高：${Number(this.lastSlippage) / 100}% → ${slipPct}%（底池GST被抽血，下跌控盘触发）`
+        `滑点档位升高：${Number(this.lastSlippage) / 100}% → ${slipPct}%（池U较峰值回落，下跌控盘触发）`
       );
     }
     this.lastSlippage = slippage;
@@ -105,6 +115,38 @@ export class Monitor {
     await this._checkErrorRate();
 
     logRun("monitor", "ok", `poolUSDT=${formatEther(poolUsdt)} slippage=${slipPct}%`);
+  }
+
+  /**
+   * v16：池状态写回（字段分工：本方法只写链上池字段，events 派生字段如 today_deposit 仍归 ledger）
+   * SQL 与 ledger.reconcile 同口径，db.js 会按方言自动翻译（SQLite: ON CONFLICT / MySQL: ON DUPLICATE KEY UPDATE）
+   */
+  async _syncPoolState({ poolZyt, poolUsdt, peakUsdt, price, stage, slippage }) {
+    try {
+      const db = await getDb();
+      // v9：pool_gst / snapshot_gst 为 v8 簿记遗留列，写 '0'；peak（滑点基准）记入 snapshot_gst 供前端读
+      await db.run(
+        `
+        INSERT INTO pool_state (id, pool_gst, pool_zyt, pool_usdt, snapshot_gst, price, slippage_pct, stage, updated_at)
+        VALUES (1,?,?,?,?,?,?,?,?)
+        ON CONFLICT(id) DO UPDATE SET pool_gst=excluded.pool_gst, pool_zyt=excluded.pool_zyt,
+          pool_usdt=excluded.pool_usdt, snapshot_gst=excluded.snapshot_gst, price=excluded.price,
+          slippage_pct=excluded.slippage_pct, stage=excluded.stage, updated_at=excluded.updated_at
+      `,
+        [
+          "0",
+          String(poolZyt),
+          String(poolUsdt),
+          String(peakUsdt),
+          String(price),
+          Number(slippage) / 100, // 链上为基点（500 = 5%），与 reconcile 口径一致
+          Number(stage),
+          Math.floor(Date.now() / 1000),
+        ]
+      );
+    } catch (e) {
+      logRun("monitor", "error", `pool_state sync: ${e.message}`);
+    }
   }
 
   /** R5：最近窗口内 keeper_runs 的 error 占比 */

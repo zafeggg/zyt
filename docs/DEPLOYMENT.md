@@ -1,5 +1,9 @@
 # ZYT 众赢币 — 生产部署指南
 
+
+> **⚠️ v9 口径变更（2026-09-24）**：本文撰写时为 v8 口径（含 GST）。v9 已弃 GST 改 USDT↔ZYT 直换（真池），
+> 合约 10→8、deploy.js 自动建池、Router 不再需要。涉及 GST/Router/手动建池的步骤以
+> 《众赢币(ZYT)_上线操作手册》顶部「v9 口径变更说明」与《众赢币(ZYT)_合约接口参考.md》（v9 全量重写）为准。
 > 从本地开发到生产上线的完整流程，涵盖架构、服务器、数据库、域名、进程管理、安全配置、监控与运维。
 > 关联文档: docs/DEPLOYMENT_ONLINE.md（逐步骤操作手册）/ 众赢币(ZYT)_技术方案.md §8 / 众赢币(ZYT)_上线流程清单.md
 
@@ -39,7 +43,7 @@
 | `zyt-dapp`      | Vue3 + Vant 前端（三语 i18n，ethers v6）    | 静态托管       |
 | `zyt-keeper`    | indexer/ledger/keeper/monitor/forcesell/API | 24h 常驻进程   |
 
-**keeper 模块职责**：索引器（事件轮询入库）/ 账本（重放重建用户状态）/ 快照机器人（每日 08:00 北京触发通缩与产出释放）/ 监控（R1-R5 规则引擎）/ 强制卖出追踪 / API（:8080 数据查询）。
+**keeper 模块职责**：索引器（事件轮询入库）/ 账本（重放重建用户状态）/ 快照机器人（每日 08:01 北京触发通缩与产出释放）/ 监控（R1-R5 规则引擎）/ 强制卖出追踪 / API（:8080 数据查询）。
 
 ---
 
@@ -138,8 +142,11 @@ SHOW TABLES;
 
 | 域名            | 指向            | 用途            |
 | ------------- | ------------- | ------------- |
-| `zyt.com`      | 前端托管IP/CDN    | 前端 DApp (SPA) |
+| `zyt.com`      | **境外**前端托管IP/CDN | 前端 DApp (SPA) |
 | `api.zyt.com`  | keeper 服务器 IP  | keeper API     |
+
+> ⚠️ **托管合规约束（2026-09-10）**：前端必须部署到**境外**托管（Cloudflare Pages / Vercel / 境外 VPS）。境内云主机承载币圈前端会被内容安全审查判违规并下发整改通知（阿里云大陆 ECS 已实发），且境内主机绑定未备案域名会被直接阻断。域名解析至中国内地以外服务器无需 ICP 备案。
+> keeper API 若随前端走境外主机，同样遵守该约束；如需保留境内资源，仅限内部用途，不对外提供服务。
 
 ### 4.2 DNS 解析（示例）
 
@@ -157,7 +164,7 @@ sudo apt install -y certbot python3-certbot-nginx
 sudo certbot --nginx -d api.zyt.com
 
 # 自动续期 (crontab)
-0 0 * * * certbot renew --quiet
+1 0 * * * certbot renew --quiet
 ```
 
 ---
@@ -295,8 +302,8 @@ ZYT_ADDR=0x待填
 USDT_ADDR=0x55d398326f99059fF775485246999027B3197955
 FORCESELL_ADDR=0x待填
 
-SNAPSHOT_CRON=0 0 * * *
-SNAPSHOT_CRON_TZ=UTC           # 北京 08:00，显式时区防漂移
+SNAPSHOT_CRON=1 0 * * *
+SNAPSHOT_CRON_TZ=UTC           # 北京 08:01，显式时区防漂移
 KEEPER_PRIVATE_KEY=0x新钱包私钥  # 独立签名钱包，仅定时触发用
 
 INDEXER_POLL_MS=30000
@@ -527,7 +534,7 @@ timeout 120 node scripts/snapshot-now.js   # 手动触发当日快照（补快�
 - [ ] 前端能正常打开并连接钱包（BSC 主网 chainId 校验）
 - [ ] 前端 `?v=` 缓存参数已更新
 - [ ] keeper 日志无持续错误；reconcile diff=0
-- [ ] 每日 08:00 快照连续验证 3 日无漏
+- [ ] 每日 08:01 快照连续验证 3 日无漏
 
 ---
 
