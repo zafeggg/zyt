@@ -15,6 +15,11 @@ artifacts/
 cache/
 *.tsbuildinfo
 
+# ===== 部署打包产物（上传服务器用的临时包，不入库）=====
+*.tar.gz
+*.tar
+*.zip
+
 # ===== 运行时数据 / 日志 =====
 data/
 logs/

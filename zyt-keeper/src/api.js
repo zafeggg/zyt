@@ -201,21 +201,35 @@ export function startApi() {
             : new Date(Number(ca) * 1000).toISOString().slice(0, 10);
           if (day === todayUTC) todayDeposit += BigInt(r.amount || "0");
         }
-        // networkPower：遍历链上 userList 用 ledger.powerOf 精确累计（含日复利）
-        // v14：60s 内存缓存——O(users×RPC) 遍历在用户数增长后会让 /stats 明显变慢
+        // networkPower：全网算力（Σ 复利后）
+        // v18 修复：v9.1 的 ZYTToken 无 getUserCount/getUserAt 接口，旧的链上 userList 遍历恒失败返回 0
+        //   改为 ① 链上 dailyInfo 最近有效日的 totalPower（权威，合约快照写入）→ ② keeper 账本 totalPower 兜底
         let networkPower;
         if (Date.now() - (npCache.at || 0) > 60_000) {
+          let val = "";
           try {
-            let sum = 0n;
-            const n = Number(await zyt.getUserCount());
-            for (let i = 0; i < n; i++) {
-              const a = await zyt.getUserAt(i);
-              sum += await ledger.powerOf(a);
+            const today = Math.floor(Date.now() / 86400000);
+            for (let d = today; d > today - 3; d--) {
+              const di = await mining.dailyInfo(d);
+              const tp = BigInt(di[0]);
+              if (tp > 0n) {
+                val = String(tp);
+                break;
+              }
             }
-            npCache.value = String(sum);
-            npCache.at = Date.now();
           } catch {
-            /* 链上遍历失败沿用旧缓存 */
+            /* 链上读取失败 → 走 DB 兜底 */
+          }
+          if (!val) {
+            try {
+              val = String(await ledger.totalPower());
+            } catch {
+              /* 两者都失败则沿用旧缓存 */
+            }
+          }
+          if (val) {
+            npCache.value = val;
+            npCache.at = Date.now();
           }
         }
         networkPower = npCache.value || "0";

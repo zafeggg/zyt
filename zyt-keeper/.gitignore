@@ -1,1 +1,17 @@
-.env.mainnet
+# ===== 依赖 =====
+node_modules/
+
+# ===== 运行时数据（重启后从链上重建，不入库）=====
+data/
+logs/
+backups/
+
+# ===== 环境变量文件（含签名私钥，禁止入库）=====
+.env
+.env.*
+!.env.example
+!.env.mainnet.example
+
+# ===== 临时与测试残留 =====
+attr-test.txt
+*.log
