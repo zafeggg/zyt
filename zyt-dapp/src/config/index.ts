@@ -58,7 +58,8 @@ const LOCAL: ChainConfig = {
 const BSC_TESTNET: ChainConfig = {
   name: "BSC Testnet",
   chainId: 97,
-  rpc: "https://bsc-testnet-rpc.publicnode.com",
+  // v20：publicnode 国内浏览器直连被重置（net::ERR_CONNECTION_CLOSED），换官方 seed 节点
+  rpc: "https://data-seed-prebsc-1-s1.bnbchain.org:8545",
   // v13：testnet 生产同源反代 /api（Nginx 代理 keeper）；联调可 VITE_API_BASE=http://localhost:8080 覆盖
   apiBase: envApiBase || "/api",
   // 测试网：临时用集成测试钱包占位，正式营销地址确定后替换
