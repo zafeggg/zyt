@@ -189,39 +189,58 @@ export function startApi() {
           burned = "0";
           lpBurned = "0";
         }
-        const todayUTC = new Date().toISOString().slice(0, 10);
-        const depRows = await db.all("SELECT amount, created_at FROM events WHERE name='Deposited'");
+        // 今日入单：必须用「链上区块时间 block_time」判断，勿用 created_at（索引入库时间）
+        // 2026-09-26 修复：keeper 重建索引时历史事件的 created_at 全变成当天 → 今日入单被高估（曾显示 2500，实际 1000）
+        // 日界用北京时间（业务视角）：北京日 = UTC 时刻 + 8h
+        const BJ_OFFSET = 8 * 3600;
+        const todayKeyBJ = new Date((Math.floor(Date.now() / 1000) + BJ_OFFSET) * 1000).toISOString().slice(0, 10);
+        const depRows = await db.all("SELECT amount, created_at, block_time, block FROM events WHERE name='Deposited'");
+        try {
+          await ledger._ensureBlockTimes(depRows); // 补齐缺失的 block_time（只拉一次并写回）
+        } catch {
+          /* 补齐失败则回退 created_at */
+        }
         let todayDeposit = 0n;
         for (const r of depRows) {
-          const ca = String(r.created_at || "");
-          // created_at 兼容两种存储：unix 秒（数值）→ 转 ISO 日期；ISO 字符串 → 直接取前 10 位
-          // （2026-09-24 修复：原实现对 unix 秒直接 slice，恒不等于 YYYY-MM-DD，todayDeposit 恒为 0）
-          const day = ca.includes("-")
-            ? ca.slice(0, 10)
-            : new Date(Number(ca) * 1000).toISOString().slice(0, 10);
-          if (day === todayUTC) todayDeposit += BigInt(r.amount || "0");
+          const ts = Number(r.block_time || 0) || Number(r.created_at || 0);
+          if (!ts) continue;
+          const dayKey = new Date((ts + BJ_OFFSET) * 1000).toISOString().slice(0, 10);
+          if (dayKey === todayKeyBJ) todayDeposit += BigInt(r.amount || "0");
         }
-        // networkPower：全网算力 = Σ 链上 mining.powerOf（权威值，含日复利 1%）
-        // v19 修复：链上 userList（zyt.getUserCount/getUserAt）完全可信，但必须用「链上 powerOf」
-        //   而非「账本 ledger.powerOf」——后者依赖 DB 事件索引，历史事件缺失时恒为 0（服务器曾出现 100% 不一致）
-        //   每个地址独立 try/catch：pair 等非用户地址（power=0）或个别 RPC 抖动不影响整体
+        // networkPower：全网算力（Σ 复利后）
+        // 2026-09-26 口径调整：keeper 账本优先，链上 dailyInfo 最近有效值兜底。
+        //   历史教训：
+        //   - v18 取链上 dailyInfo 最近非 0 值：快照滞后或写入 0 时展示过期数据（曾显示 1500，实际 2530）
+        //   - v19 遍历 zyt.getUserCount/getUserAt：userList 仅收录有卖出/转账行为的地址
+        //     （ZYTToken._update 只在普通转账路径调 _onReceive），纯入金用户不在列表，实测漏 1 个用户
+        //   账本由 events 重建，覆盖全部入金用户，且带 power_day 复利，与合约同口径
         let networkPower;
         if (Date.now() - (npCache.at || 0) > 60_000) {
+          let val = "";
           try {
-            const n = Number(await zyt.getUserCount());
-            let sum = 0n;
-            for (let i = 0; i < n; i++) {
-              const a = await zyt.getUserAt(i);
-              try {
-                sum += BigInt(await mining.powerOf(a));
-              } catch {
-                /* 单地址读取失败（如已出局/非用户地址）：跳过，不影响总和 */
-              }
-            }
-            npCache.value = String(sum);
-            npCache.at = Date.now();
+            const live = await ledger.totalPower();
+            if (live > 0n) val = String(live);
           } catch {
-            /* 链上遍历整体失败：沿用旧缓存 */
+            /* 账本不可用 → 走链上快照兜底 */
+          }
+          if (!val) {
+            try {
+              const today = Math.floor(Date.now() / 86400000);
+              for (let d = today; d > today - 3; d--) {
+                const di = await mining.dailyInfo(d);
+                const tp = BigInt(di[0]);
+                if (tp > 0n) {
+                  val = String(tp);
+                  break;
+                }
+              }
+            } catch {
+              /* 链上读取失败则沿用旧缓存 */
+            }
+          }
+          if (val) {
+            npCache.value = val;
+            npCache.at = Date.now();
           }
         }
         networkPower = npCache.value || "0";

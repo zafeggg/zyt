@@ -40,10 +40,28 @@ const mining = new Contract(
 );
 
 const n = Number(await zyt.getUserCount());
-console.log(`=== 链上用户枚举（count=${n}） ===`);
+console.log(`=== 链上 userList 枚举（count=${n}） ===`);
+
+// ⚠️ 重要：ZYTToken.userList 只收录「发生过卖出/转账」的地址（_update 普通转账路径才调 _onReceive），
+//    纯入金用户不在其中。因此地址来源必须是「链上 userList ∪ 本地 events 里出现过的地址」。
+const addrSet = new Set();
+for (let i = 0; i < n; i++) addrSet.add(String(await zyt.getUserAt(i)).toLowerCase());
+try {
+  const db0 = await getDb();
+  const rows = await db0.all(
+    "SELECT DISTINCT from_addr AS a FROM events WHERE from_addr IS NOT NULL UNION SELECT DISTINCT to_addr AS a FROM events WHERE to_addr IS NOT NULL"
+  );
+  for (const r of rows) {
+    const a = String(r.a || "").toLowerCase();
+    if (/^0x[0-9a-f]{40}$/.test(a)) addrSet.add(a);
+  }
+  console.log(`本地 events 补充地址后，候选地址 ${addrSet.size} 个（含纯入金用户）`);
+} catch {
+  /* 无 DB 时只用链上列表 */
+}
+
 const rows = [];
-for (let i = 0; i < n; i++) {
-  const addr = String(await zyt.getUserAt(i)).toLowerCase();
+for (const addr of addrSet) {
   try {
     const [ui, pw, dv, bal] = await Promise.all([
       mining.userInfo(addr),
@@ -51,6 +69,8 @@ for (let i = 0; i < n; i++) {
       mining.dividendOf(addr),
       zyt.balanceOf(addr),
     ]);
+    // 跳过从未入金且无算力的地址（如 pair 合约、营销/技术地址等非用户）
+    if (BigInt(ui[0]) === 0n && BigInt(pw) === 0n && BigInt(ui[1]) === 0n && BigInt(ui[3]) === 0n) continue;
     const rec = {
       address: addr,
       deposit_total: ui[0],
