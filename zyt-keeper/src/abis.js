@@ -107,4 +107,6 @@ export const MINING_USERINFO_ABI = [
   // 2026-09-25：分红预估接口用（dailyInfo 结构体仅 2 字段：[0]=totalPower, [1]=dividendAmount）
   "function dailyInfo(uint256) view returns (uint256,uint256)",
   "function dividendOf(address) view returns (uint256,uint256)",
+  // 2026-09-26：全网算力统计用（链上权威值，含日复利；勿用 DB 账本口径，事件缺失时恒为 0）
+  "function powerOf(address) view returns (uint256)",
 ];

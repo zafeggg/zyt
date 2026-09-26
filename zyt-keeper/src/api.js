@@ -201,35 +201,27 @@ export function startApi() {
             : new Date(Number(ca) * 1000).toISOString().slice(0, 10);
           if (day === todayUTC) todayDeposit += BigInt(r.amount || "0");
         }
-        // networkPower：全网算力（Σ 复利后）
-        // v18 修复：v9.1 的 ZYTToken 无 getUserCount/getUserAt 接口，旧的链上 userList 遍历恒失败返回 0
-        //   改为 ① 链上 dailyInfo 最近有效日的 totalPower（权威，合约快照写入）→ ② keeper 账本 totalPower 兜底
+        // networkPower：全网算力 = Σ 链上 mining.powerOf（权威值，含日复利 1%）
+        // v19 修复：链上 userList（zyt.getUserCount/getUserAt）完全可信，但必须用「链上 powerOf」
+        //   而非「账本 ledger.powerOf」——后者依赖 DB 事件索引，历史事件缺失时恒为 0（服务器曾出现 100% 不一致）
+        //   每个地址独立 try/catch：pair 等非用户地址（power=0）或个别 RPC 抖动不影响整体
         let networkPower;
         if (Date.now() - (npCache.at || 0) > 60_000) {
-          let val = "";
           try {
-            const today = Math.floor(Date.now() / 86400000);
-            for (let d = today; d > today - 3; d--) {
-              const di = await mining.dailyInfo(d);
-              const tp = BigInt(di[0]);
-              if (tp > 0n) {
-                val = String(tp);
-                break;
+            const n = Number(await zyt.getUserCount());
+            let sum = 0n;
+            for (let i = 0; i < n; i++) {
+              const a = await zyt.getUserAt(i);
+              try {
+                sum += BigInt(await mining.powerOf(a));
+              } catch {
+                /* 单地址读取失败（如已出局/非用户地址）：跳过，不影响总和 */
               }
             }
-          } catch {
-            /* 链上读取失败 → 走 DB 兜底 */
-          }
-          if (!val) {
-            try {
-              val = String(await ledger.totalPower());
-            } catch {
-              /* 两者都失败则沿用旧缓存 */
-            }
-          }
-          if (val) {
-            npCache.value = val;
+            npCache.value = String(sum);
             npCache.at = Date.now();
+          } catch {
+            /* 链上遍历整体失败：沿用旧缓存 */
           }
         }
         networkPower = npCache.value || "0";
