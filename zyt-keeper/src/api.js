@@ -105,12 +105,21 @@ async function readCreator(creator) {
         creator.totalDeflationZytOut(),
         creator.totalDeflationUsdtOut(),
       ]);
+      // v9.1 新增字段，单独容错避免拖垮整个 readCreator。双重保护：
+      // ① ABI 未含该函数时 creator.totalLpWithdrawn 为 undefined，直接调用会同步抛 TypeError
+      //    （不属于 Promise reject，.catch 捕不到），故先判存在性
+      // ② 合约未升级但 ABI 已更新时，调用 revert，由 .catch 兜底返回 0
+      const lpWithdrawn =
+        typeof creator.totalLpWithdrawn === "function"
+          ? await creator.totalLpWithdrawn().catch(() => 0n)
+          : 0n;
       value = {
         lockedLiquidity: String(locked),
         totalZytSeeded: String(zytSeeded),
         totalUsdtSeeded: String(usdtSeeded),
         totalDeflationZytOut: String(deflZyt),
         totalDeflationUsdtOut: String(deflUsdt),
+        totalLpWithdrawn: String(lpWithdrawn),
       };
     } catch {
       value = null; // 下一轮重试
@@ -386,6 +395,12 @@ export function startApi() {
             address: addr,
             status: "ok",
             firstReceiveAt: Number(row.first_receive_at),
+            // v21：窗口截止的绝对时间戳（= 首次收币 + (窗口+1)×15 天）；窗口 4 已结束或未初始化时为 0
+            //      修复：此前前端把 deadlineSec（剩余秒数）当 unix 时间戳格式化 → 显示成 1970-01-14
+            windowEndAt:
+              Number(row.first_receive_at || 0) > 0 && cs.window < 4
+                ? Number(row.first_receive_at) + (cs.window + 1) * 15 * 86400
+                : 0,
             currentWindow: cs.window,
             cumTargetPct: cs.cumBps / 100,
             requiredSell: String(cs.required),

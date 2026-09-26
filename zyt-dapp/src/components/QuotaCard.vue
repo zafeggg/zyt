@@ -49,7 +49,7 @@
         {{ $t("home.forceSellDiff", { n: fmtZyt(diffWei.toString()) }) }}
       </div>
       <div class="fs-meta fs-sub">
-        <span>{{ $t("home.forceSellDeadline") }}: {{ fmtDeadline(forceSell.deadlineSec) }}</span>
+        <span>{{ $t("home.forceSellDeadline") }}: {{ fmtDeadline(forceSell) }}</span>
       </div>
       <div class="fs-note">{{ $t("home.forceSellBase") }}</div>
       <div v-if="forceSell.atRisk" class="fs-risk">
@@ -119,12 +119,24 @@ const diffWei = computed(() => {
   }
 });
 
-/** 截止时间（unix 秒 → 本地日期时间） */
-function fmtDeadline(sec: number): string {
-  if (!sec) return "-";
-  const d = new Date(sec * 1000);
-  const p = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+/** 截止时间显示
+ *  v21 修复：keeper 的 deadlineSec 是「剩余秒数」（相对时长），此前被当 unix 时间戳格式化
+ *  → 显示成 1970-01-14。现优先用 windowEndAt（绝对时间戳 = 首次收币 + 窗口数×15天）；
+ *    0 表示无截止（未初始化或 4 期已结束），显示 "-"。
+ */
+function fmtDeadline(forceSell: { windowEndAt?: number; deadlineSec?: number }): string {
+  const abs = Number(forceSell.windowEndAt || 0);
+  if (abs > 0) {
+    const d = new Date(abs * 1000);
+    const p = (n: number) => String(n).padStart(2, "0");
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+  }
+  // 兼容旧后端：把剩余秒格式化为「X 天 X 小时」
+  const remain = Number(forceSell.deadlineSec || 0);
+  if (!remain) return "-";
+  const days = Math.floor(remain / 86400);
+  const hours = Math.floor((remain % 86400) / 3600);
+  return days > 0 ? `${days} 天 ${hours} 小时` : `${hours} 小时`;
 }
 </script>
 
