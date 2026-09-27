@@ -1,0 +1,65 @@
+const { ethers } = require("hardhat");
+async function main() {
+  const [deployer, keeper, alice, bob] = await ethers.getSigners();
+  const DEAD = "0x000000000000000000000000000000000000dEaD";
+  const E18 = 10n ** 18n;
+  const ZYT_MAX = 2100000000n * E18, SEED = 21000n * E18, U500 = 500n * E18;
+  const Mock = await ethers.getContractFactory("MockERC20");
+  const usdt = await Mock.deploy("USDT", "USDT", 18);
+  const config = await (await ethers.getContractFactory("ZYTConfig")).deploy();
+  const zyt = await (await ethers.getContractFactory("ZYTToken")).deploy(DEAD);
+  const factory = await (await ethers.getContractFactory("MiniFactory")).deploy();
+  const creator = await (await ethers.getContractFactory("ZYTLiquidityCreator")).deploy(await zyt.getAddress(), await usdt.getAddress(), await factory.getAddress(), DEAD);
+  const pool = await (await ethers.getContractFactory("ZYTPoolManager")).deploy(await config.getAddress(), await zyt.getAddress(), await usdt.getAddress());
+  const referral = await (await ethers.getContractFactory("ZYTReferral")).deploy();
+  const forceSell = await (await ethers.getContractFactory("ZYTForceSell")).deploy(await zyt.getAddress());
+  const lib = await (await ethers.getContractFactory("ZYTCompute")).deploy();
+  const mining = await (await ethers.getContractFactory("ZYTMining", { libraries: { ZYTCompute: await lib.getAddress() } })).deploy(await config.getAddress(), await pool.getAddress(), await referral.getAddress(), await zyt.getAddress(), await usdt.getAddress());
+  const deflation = await (await ethers.getContractFactory("ZYTDeflation")).deploy(await config.getAddress(), await pool.getAddress(), await mining.getAddress());
+  for (const [k, v] of [["usdt", usdt], ["blackHole", {address: DEAD}], ["zyt", zyt], ["factory", factory], ["pool", pool], ["mining", mining], ["deflation", deflation], ["forceSell", forceSell], ["referral", referral], ["creator", creator], ["marketAddress", deployer], ["technicalAddress", alice], ["keeperAddress", keeper]]) await config.setAddress(k, v.address);
+  await zyt.setMinter(await creator.getAddress());
+  await zyt.setLedger(await mining.getAddress());
+  await zyt.setPool(await pool.getAddress());
+  await zyt.setForceSell(await forceSell.getAddress());
+  await zyt.setCreator(await creator.getAddress());
+  await zyt.setConfig(await config.getAddress());
+  for (const a of [creator, pool, mining, deflation]) await zyt.setWhiteList(await a.getAddress(), true);
+  await zyt.setWhiteList(deployer.address, true);
+  await pool.setLocker(await creator.getAddress());
+  await pool.setMining(await mining.getAddress());
+  await pool.setDeflation(await deflation.getAddress());
+  await referral.setMining(await mining.getAddress());
+  await creator.setPoolManager(await pool.getAddress());
+  await mining.setDeflation(await deflation.getAddress());
+  await forceSell.setKeeper(keeper.address);
+  await usdt.faucet(SEED * 100n);
+  await usdt.approve(await creator.getAddress(), SEED);
+  await creator.createInitialPool(ZYT_MAX, SEED);
+  const pair = await creator.pair();
+  await config.setAddress("pair", pair);
+  await zyt.setPair(pair);
+  await pool.setPair(pair);
+  await zyt.setWhiteList(pair, true);
+  // alice deposit, bob deposit+buy
+  for (const s of [alice, bob]) {
+    await usdt.connect(s).faucet(U500);
+    await usdt.connect(s).approve(await mining.getAddress(), U500);
+    await mining.connect(s).deposit(U500, "0x0000000000000000000000000000000000000000");
+  }
+  await config.setUint("poolStage1USDT", 21000n * E18);
+  await config.setUint("poolStage2USDT", 10000000n * E18);
+  await usdt.connect(bob).faucet(U500);
+  await usdt.connect(bob).approve(await mining.getAddress(), U500);
+  await mining.connect(bob).buy(U500);
+  const bobZyt = await zyt.balanceOf(bob.address);
+  console.log("rate:", (await pool.getCurrentSlippage()).toString());
+  console.log("peak:", (await pool.peakPoolUSDT()).toString(), "uRes:", (await pool.poolUSDT()).toString());
+  const mB = await zyt.balanceOf(deployer.address);
+  await zyt.connect(bob).approve(await pool.getAddress(), bobZyt / 2n);
+  await mining.connect(bob).sellZyt(bobZyt / 2n);
+  const slip = bobZyt / 2n * 500n / 10000n;
+  console.log("bobZyt:", bobZyt.toString());
+  console.log("slip_js:", slip.toString(), "slip*3/10:", slip * 3000n / 10000n);
+  console.log("market got:", (await zyt.balanceOf(deployer.address) - mB).toString());
+}
+main().catch(e => { console.error(e); process.exit(1); });

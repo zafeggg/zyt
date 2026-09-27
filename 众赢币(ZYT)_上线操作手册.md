@@ -14,7 +14,7 @@
 
 | 项 | v8（正文） | v9（执行口径） |
 |---|---|---|
-| 合约数量 | 10（含 GSTToken） | **8**（删 GSTToken；Creator 改为「初始建池 + LP 锁仓」） |
+| 合约数量 | 10（含 GSTToken） | **8**（删 GSTToken；Creator 负责「初始建池 + LP 托管」，供每日通缩抽池） |
 | 初始建池 | 手动 Pancake 建 GST/ZYT 池 + PAIR_ADDRESS 回填 | **deploy.js 自动执行 createInitialPool**（2.1万U + 21亿ZYT），无需手动建池 |
 | deploy 前置 | deployer 持 2.1万 USDT + 21万 GST | **仅需 2.1万 USDT + BNB gas**（GST 不复存在） |
 | 部署确认 | 交互输 yes / CONFIRM_MAINNET=1 | 沿用 |
@@ -24,12 +24,12 @@
 | keeper 对账 | daySoldGST/snapshotPoolUSDT 口径 | 真池 4 字段对账（deposit/withdraw/dynamicQuota/dynamicWithdrawn）+ 受赠值 |
 | 前端 config | GST 地址 + Router | **删除 GST/Router**；新增 factory（testnet/mainnet 分流）；合约地址 8 个 |
 | 前端交易 | convertPowerToZyt（approve→mining） | **mining.buy()**（approve USDT→mining）；卖出 approve 对象仍为 pool |
-| 验收清单 | 1.5.1b 手动建池 + 三项接线 | **改为：部署日志确认「Initial pool created」+ 「Pair wired」+ LP 锁仓量 > 0** |
+| 验收清单 | 1.5.1b 手动建池 + 三项接线 | **改为：部署日志确认「Initial pool created」+ 「Pair wired」+ LP 持有量 > 0** |
 | 强卖窗口 | 60% 封顶（旧文案） | **50% 封顶**（20/30/40/50 累计，keeper forcesell.js 已同步） |
 | smoke 脚本 | smoke-testnet.js（v8 口径） | 未适配 v9，testnet 验收以 hardhat test + 部署日志代替 |
 
 **v9 新增上线验收项**：
-1. `creator.lockedLiquidity() > 0`（LP 锁仓生效）
+1. `creator.lockedLiquidity() > 0`（LP 由 Creator 托管，供每日通缩抽池；owner 保留 `withdrawLp` 出口，语义为持有量而非锁定）
 2. `zyt.totalSupply() == 21亿`（一次铸出，此后只减不增）
 3. `pool.poolUSDT() == 2.1万U` 且 `pool.poolZYT() == 21亿`（初始比例 1:100000，价格 0.00001U）
 4. 直接对 pair 转 ZYT 应 revert `ZYT: pair inflow gated`（卖闸生效）
@@ -514,8 +514,12 @@ $ npx hardhat run scripts/verify-all-mainnet.js --network bsc   # 脚本已就�
 **移交后所有参数/白名单变更均走 W2 多签提案 → 2 人签名 → 执行（SOP 见附录 D）**
 
 #### 1.5.6 建池与底池注入
-- 建 GST/USDT 池（约 2.1 万 U 等值）→ 注入底池 → **LP 100% 打黑洞**（公示销毁哈希）
-- **【确认】** 池子可正常兑换；黑洞地址 LP 余额与公示哈希一致；`pool` 合约读到的底池值与注入量吻合
+- `deploy.js` 自动执行 `creator.createInitialPool(21 亿 ZYT, 2.1 万 USDT)` 建 ZYT/USDT 池
+- **LP 去向（v9.1 实际口径，两路并行）**：
+  - **入金产生的 LP**（每笔入金的 60% 组 LP）全额转入黑洞 `0x…dEaD`，永久不可撤回
+  - **初始建池 LP**（约 664 万）留在 Creator，供每日通缩 `skimDeflation` 按 1% 逐日抽池释放 ZYT
+- **【确认】** 池子可正常兑换；`pool` 合约读到的底池值与注入量吻合；黑洞 LP 余额与 Creator 持有量之和等于 LP 总量
+- ⚠️ **对外表述**：不可宣称「LP 100% 永久锁定」。`ZYTLiquidityCreator.withdrawLp`（onlyOwner）保留为运营出口，准确说法是「入金 LP 全额打入黑洞，初始 LP 由治理多签托管并按日通缩释放」
 
 #### 1.5.7 keeper 切主网并首日验证
 ```bash

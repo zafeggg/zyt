@@ -108,7 +108,6 @@ const creatorLine = computed(() => {
   if (p.creatorUsdtIn) parts.push(`${t("home.poolCreated")} ${fmtNum(p.creatorUsdtIn, 2)} U`);
   if (p.lpLocked) parts.push(`LP ${fmtCompact(p.lpLocked)}`);
   if (parts.length === 0) return "";
-  parts.push(t("home.lpLocked"));
   return parts.join(" · ");
 });
 

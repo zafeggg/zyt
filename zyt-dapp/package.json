@@ -9,6 +9,7 @@
     "build": "vue-tsc --noEmit && vite build",
     "preview": "vite preview",
     "build:bsc": "cross-env VITE_CHAIN=bscMainnet vite build",
+    "build:testnet": "cross-env VITE_CHAIN=bscTestnet vite build",
     "typecheck": "vue-tsc --noEmit"
   },
   "dependencies": {

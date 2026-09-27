@@ -1,0 +1,74 @@
+[
+  {
+    "name": "ZYTCompute",
+    "address": "0xf6Cc1617C480D1a412549c8a11618FF30c31f048",
+    "contractName": "contracts/ZYTCompute.sol:ZYTCompute",
+    "compilerVersion": "v0.8.24+commit.e11b9ed9",
+    "argsFile": "ZYTCompute.args",
+    "jsonFile": "ZYTCompute.json"
+  },
+  {
+    "name": "ZYTConfig",
+    "address": "0x4FEFe79A90Bf7C9BD2699030Ee1ad0360f4B1B22",
+    "contractName": "contracts/ZYTConfig.sol:ZYTConfig",
+    "compilerVersion": "v0.8.24+commit.e11b9ed9",
+    "argsFile": "ZYTConfig.args",
+    "jsonFile": "ZYTConfig.json"
+  },
+  {
+    "name": "ZYTReferral",
+    "address": "0x43018AF273296064991c018955c636fB45eB0dad",
+    "contractName": "contracts/ZYTReferral.sol:ZYTReferral",
+    "compilerVersion": "v0.8.24+commit.e11b9ed9",
+    "argsFile": "ZYTReferral.args",
+    "jsonFile": "ZYTReferral.json"
+  },
+  {
+    "name": "ZYTToken",
+    "address": "0xa64E6ab9A8a61f55eE9B1521312783AE033fd546",
+    "contractName": "contracts/ZYTToken.sol:ZYTToken",
+    "compilerVersion": "v0.8.24+commit.e11b9ed9",
+    "argsFile": "ZYTToken.args",
+    "jsonFile": "ZYTToken.json"
+  },
+  {
+    "name": "ZYTForceSell",
+    "address": "0xaE0EeD16e6f7ca4736294a6c2E4a5b87d02672C8",
+    "contractName": "contracts/ZYTForceSell.sol:ZYTForceSell",
+    "compilerVersion": "v0.8.24+commit.e11b9ed9",
+    "argsFile": "ZYTForceSell.args",
+    "jsonFile": "ZYTForceSell.json"
+  },
+  {
+    "name": "ZYTPoolManager",
+    "address": "0x57d8Ec0D9Ef0822dFc5D08Db686D182351580028",
+    "contractName": "contracts/ZYTPoolManager.sol:ZYTPoolManager",
+    "compilerVersion": "v0.8.24+commit.e11b9ed9",
+    "argsFile": "ZYTPoolManager.args",
+    "jsonFile": "ZYTPoolManager.json"
+  },
+  {
+    "name": "ZYTLiquidityCreator",
+    "address": "0x41799040658764d91C94AF16b8B461f2fc1A040F",
+    "contractName": "contracts/ZYTLiquidityCreator.sol:ZYTLiquidityCreator",
+    "compilerVersion": "v0.8.24+commit.e11b9ed9",
+    "argsFile": "ZYTLiquidityCreator.args",
+    "jsonFile": "ZYTLiquidityCreator.json"
+  },
+  {
+    "name": "ZYTMining",
+    "address": "0x0119cf2eac935447f2Dd60C457190fAEa116fd22",
+    "contractName": "contracts/ZYTMining.sol:ZYTMining",
+    "compilerVersion": "v0.8.24+commit.e11b9ed9",
+    "argsFile": "ZYTMining.args",
+    "jsonFile": "ZYTMining.json"
+  },
+  {
+    "name": "ZYTDeflation",
+    "address": "0xF44fE232d26F4E845Be75960bc0a65aB12898D73",
+    "contractName": "contracts/ZYTDeflation.sol:ZYTDeflation",
+    "compilerVersion": "v0.8.24+commit.e11b9ed9",
+    "argsFile": "ZYTDeflation.args",
+    "jsonFile": "ZYTDeflation.json"
+  }
+]

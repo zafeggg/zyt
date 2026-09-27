@@ -92,20 +92,20 @@ const BSC_MAINNET: ChainConfig = {
   // 说明：根邀请码当前不参与注册页预填（决策 22），仅作官方码取值与后续运营策略用
   rootInvite: "0x1bc03Fe18F9BabBc32f0B4046E13e387E9D16786",
   contracts: {
-    // ⚠️ 主网 TestUSDT 试运行版（2026-09-14 部署并 verify，deployments/mainnet-test-20260914.json）
-    // 正式版（真实 USDT）重部署后需整段替换（见上线操作手册附录 E）
-    config: "0x7247791Bd79e831C78B8DCFDF820C43a7386f370",
-    gst: "0x3D4A87Bb1487737b97BD4c86a56EDCA9f794F784",
-    zyt: "0xAB4c090CD436D1d93Aa6D18067A3217206Bd097A",
-    forceSell: "0xD944f0A514b92F9adBc805F7E94E75aD489Af2A6",
-    pool: "0xe2b0DdB48f4455830D38cD765d9b79DBd906c291",
-    referral: "0x74285fC2c76F1C5Ec1912bA6EB2788B353C26970",
-    mining: "0xFC97Bf17243C2ef9A8442c190A1897B61745C830",
-    deflation: "0x95e60944e0DF1846f5498B4b8A678564f9aCDe26",
-    // 试运行版为 TestUSDT（MockERC20，bscscan 已 verify）；正式版替换为真实 USDT 0x55d398326f99059fF775485246999027B3197955
-    usdt: "0x4cd6d10260Cdfc55A9dcf97dfffade73080E7608",
-    // v17：Creator 部署后填入（同上）
-    creator: "",
+    // ✅ 主网正式版 v9.1（2026-09-26 部署，真实 USDT，deployments/mainnet-20260926.json）
+    // 与原试运行版（TestUSDT + GST 架构）的区别：gst 清空（v9 弃用双币）、usdt 为真实 USDT、creator 已接线
+    config: "0x4FEFe79A90Bf7C9BD2699030Ee1ad0360f4B1B22",
+    gst: "", // v9 已弃用 GST 计价层（保留字段以兼容类型定义）
+    zyt: "0xa64E6ab9A8a61f55eE9B1521312783AE033fd546",
+    forceSell: "0xaE0EeD16e6f7ca4736294a6c2E4a5b87d02672C8",
+    pool: "0x57d8Ec0D9Ef0822dFc5D08Db686D182351580028",
+    referral: "0x43018AF273296064991c018955c636fB45eB0dad",
+    mining: "0x0119cf2eac935447f2Dd60C457190fAEa116fd22",
+    deflation: "0xF44fE232d26F4E845Be75960bc0a65aB12898D73",
+    // 真实 USDT（BSC 主网 official）
+    usdt: "0x55d398326f99059fF775485246999027B3197955",
+    // 底池创建合约（入金 60% 通道 + 每日通缩撤池）
+    creator: "0x41799040658764d91C94AF16b8B461f2fc1A040F",
   },
 };
 

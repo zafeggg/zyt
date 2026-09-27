@@ -203,7 +203,7 @@
 | P3 | 字节码 + 源码验证 | `node scripts/probe-bytecode.js`；`verify-all-mainnet.js --network bsc` | 字节码 match；bscscan 9/9 绿色勾 |
 | P4 | 参数核对 | 按操作手册 1.3.3 逐项 `eth_call` | owner/market/technical/keeper/白名单开关/stage/滑点档位全部一致 |
 | P5 | owner 移交 W2 多签（**正式版必做，试运行版跳过**） | `transferOwnership(0xa67E65FA6daa80eFFEE911E042C0f5b0C8718C33)` | `owner() == W2`；原部署钱包已无权限（试调用 setUint 应 revert） |
-| P6 | 建池 + 底池注入 + LP 打黑洞 | 建 GST/USDT 池（约 2.1 万 U）→ 注入 → LP 销毁 | 池可兑换；LP 黑洞余额与公示哈希一致 |
+| P6 | 建池 + 底池注入 + LP 分配 | `createInitialPool` 自动建 ZYT/USDT 池（21 亿 ZYT + 2.1 万 U）；入金 LP 全入黑洞 `0x…dEaD`，初始 LP 留 Creator 供通缩抽池 | 池可兑换；黑洞 LP 与 Creator 持有量之和 = LP 总量；对外口径按操作手册 1.5.6（不宣称「LP 100% 永久锁定」） |
 | P7 | keeper 切主网 + 首日快照 | 替换 `.env` 全部项（操作手册 1.3.7）→ 启动 | 日志 `chain=56`；首日 08:01 快照上链、MySQL 落库 |
 | P8 | 白名单放行 | 走 W2 多签批量加白（操作手册附录 D） | `buyWhitelist(地址)==true` 且 `buyWhitelistEnabled()==true` |
 

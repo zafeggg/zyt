@@ -1,20 +1,43 @@
 /* global ethers hre */
 /**
- * @title ZYT v9.1 testnet 验收脚本（smoke）
+ * @title ZYT v9.1 验收脚本（smoke，主网/测试网通用）
  * @notice 只读验收 + 可选写入流程；写入按 stage 自适应（stage1 禁买则跳过买入）
  * @usage  只读： npx hardhat run scripts/smoke-testnet.js --network bscTestnet
- *         写入： SMOKE_WRITE=1 SMOKE_DEPOSIT=100 npx hardhat run scripts/smoke-testnet.js --network bscTestnet
- * @note   地址默认读 deployments/v91-testnet-20260924.json；env 可覆盖各 *_ADDR
+ *                npx hardhat run scripts/smoke-testnet.js --network bsc          # 主网（默认只读）
+ *         写入： SMOKE_WRITE=1 SMOKE_DEPOSIT=100 ... --network bscTestnet
+ * @note   地址默认按网络自动选 deployments/{mainnet|bscTestnet}-*.json 最新一份；
+ *         SMOKE_DEPLOY_FILE 指定文件，或 env 覆盖各 *_ADDR。
+ *         ⚠️ 主网写入模式会真实花费 USDT 并产生链上交易，默认只读。
  */
 require("dotenv").config();
 const fs = require("fs");
 const path = require("path");
 
 // ===== 地址来源：deployments JSON 优先，env 可覆盖 =====
-const DEPLOY_FILE = process.env.SMOKE_DEPLOY_FILE || "deployments/v91-testnet-20260924.json";
+function pickDeployFile() {
+  if (process.env.SMOKE_DEPLOY_FILE) return process.env.SMOKE_DEPLOY_FILE;
+  // 网络名优先取 hre（hardhat run --network 不一定写入 HARDHAT_NETWORK 环境变量）
+  const net = (typeof hre !== "undefined" && hre.network && hre.network.name) || process.env.HARDHAT_NETWORK || "bscTestnet";
+  const prefix = net === "bsc" ? "mainnet" : net === "bscTestnet" ? "bscTestnet" : "localhost";
+  const dir = path.join(__dirname, "..", "deployments");
+  try {
+    const all = fs.readdirSync(dir).filter((f) => f.endsWith(".json"));
+    // 优先精确前缀（deploy.js 命名规则：mainnet-*.json / bscTestnet-*.json）
+    const exact = all.filter((f) => f.startsWith(prefix)).sort();
+    if (exact.length) return `deployments/${exact[exact.length - 1]}`;
+    // 兜底：按网络关键字匹配历史命名（如 v91-testnet-*.json）
+    const key = prefix === "mainnet" ? "mainnet" : "testnet";
+    const loose = all.filter((f) => f.includes(key)).sort();
+    if (loose.length) return `deployments/${loose[loose.length - 1]}`;
+  } catch {
+    /* 目录不存在时落到 env 地址 */
+  }
+  return "";
+}
+const DEPLOY_FILE = pickDeployFile();
 let D = {};
 try {
-  D = JSON.parse(fs.readFileSync(path.join(__dirname, "..", DEPLOY_FILE), "utf8")).contracts || {};
+  if (DEPLOY_FILE) D = JSON.parse(fs.readFileSync(path.join(__dirname, "..", DEPLOY_FILE), "utf8")).contracts || {};
 } catch {
   console.warn(`⚠️  未读到 ${DEPLOY_FILE}，将使用 env 地址`);
 }
@@ -27,7 +50,7 @@ const A = {
   forceSell: process.env.FORCESELL_ADDR || D.ZYTForceSell,
   mining: process.env.MINING_ADDR || D.ZYTMining,
   deflation: process.env.DEFLATION_ADDR || D.ZYTDeflation,
-  usdt: process.env.USDT_ADDR || D.MockUSDT,
+  usdt: process.env.USDT_ADDR || D.USDT || D.MockUSDT,
   pair: process.env.PAIR_ADDR || D["Pair(ZYT/USDT)"],
 };
 
@@ -52,6 +75,10 @@ async function main() {
   const [signer] = await ethers.getSigners();
   console.log(`\n===== ZYT v9.1 smoke (testnet) =====`);
   console.log(`signer: ${signer.address}  写入模式: ${WRITE ? "ON" : "OFF"}`);
+  console.log(`部署记录: ${DEPLOY_FILE || "（未找到，使用 env 地址）"}`);
+  if (WRITE && Number((await ethers.provider.getNetwork()).chainId) === 56) {
+    console.log("⚠️  主网写入模式：本次会产生真实链上交易与 USDT 花费，确认 SMOKE_DEPOSIT 金额无误");
+  }
   console.log(`地址: pool=${A.pool} zyt=${A.zyt}\n`);
 
   const zyt = await ethers.getContractAt("ZYTToken", A.zyt);

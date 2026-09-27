@@ -1,0 +1,98 @@
+{
+  "version": "v9.1",
+  "date": "2026-09-24",
+  "network": "bscTestnet",
+  "chainId": 97,
+  "usdtMock": true,
+  "deployer": "0xB7233A003C37Beb100C4eFCF82793D24B90179F9",
+  "startBlock": 132873786,
+  "pancakeFactory": "0xB7926C0430Afb07AA7DEfDE6DA862aE0Bde767bc",
+  "contracts": {
+    "ZYTConfig": "0x8402D46f5974301028Ee461d485748b71b0dc487",
+    "ZYTToken": "0x9D434F75564410d6e41664716defEd92d95985C1",
+    "ZYTLiquidityCreator": "0x9bFccB1ADb2da1d634aC9CF426e5e276754a6F74",
+    "ZYTPoolManager": "0x36fa17d24dD706c5a9F61e4Afb47eD3C357b349e",
+    "ZYTReferral": "0xf6Fa72Dd11E0426419D3c3aA75e91730E75B0C4C",
+    "ZYTForceSell": "0xCC89c59Cc9b47C7D32545F8f53E0633d3e01a90D",
+    "ZYTMining": "0x7e3507050db25AD09f2D772Df72C4bea3bae0b04",
+    "ZYTDeflation": "0x80a98C926755604A5582289eecd3eB25C816EF8b",
+    "ZYTCompute": "0xAaFC62D2239B0D8C5ffA8c84E749cFb891eF45C9",
+    "Pair(ZYT/USDT)": "0xc16B3D23fc1C923EA35fBbfc6B4f1d54dbcAB0aa",
+    "USDT": "0x33F797D0cC0a5462809c957641A09B37FeeFF41A"
+  },
+  "keeper": {
+    "address": "0x09BeD12b5956E1E53668Aa10E242766E3aE3B641",
+    "bnb": "0.05"
+  },
+  "acceptance": {
+    "totalSupply": "2100000000",
+    "poolUSDT": "21000",
+    "poolZYT": "2100000000",
+    "price": "0.00001",
+    "lockedLiquidity": "6640783086353596597196676",
+    "stage": 1,
+    "stage1USDT": "10000000",
+    "slippageBps": 500,
+    "tests": "hardhat 10/10 passing（含卖出单计提取精确断言）"
+  },
+  "changesFromV9": [
+    "卖出双计提取修复：ZYTToken 用户转 pool 分支跳过 recordTransferOut（卖出实收由 Mining.sellZyt 单点记账），静态 2 倍出局线不再提前触发",
+    "测试新增精确断言：withdrawTotal === 卖出实收 USDT"
+  ],
+  "notes": [
+    "第九套（0x2911…Mining 系）因卖出双计 bug 废弃，勿引用",
+    "第一轮废弃套件（Factory 地址记错）同样勿引用",
+    "keeper .env 与前端 config 已同步本套地址；stage1 阈值恢复正式口径 1000 万 U"
+  ],
+  "deployBlock": 132873786,
+  "indexerStartBlock": 132873780,
+  "factory": "0xB7926C0430Afb07AA7DEfDE6DA862aE0Bde767bc",
+  "roles": {
+    "deployer": "0xB7233A003C37Beb100C4eFCF82793D24B90179F9",
+    "market": "0x1bc03Fe18F9BabBc32f0B4046E13e387E9D16786",
+    "technical": "0x860D4704d6eee98Aa55A971Caf8BAA4134E8eec3",
+    "keeper": "0x09BeD12b5956E1E53668Aa10E242766E3aE3B641"
+  },
+  "constructorArgs": {
+    "ZYTCompute": [],
+    "ZYTConfig": [],
+    "ZYTToken": [
+      "0x000000000000000000000000000000000000dEaD"
+    ],
+    "ZYTReferral": [],
+    "ZYTForceSell": [
+      "0x9D434F75564410d6e41664716defEd92d95985C1"
+    ],
+    "ZYTPoolManager": [
+      "0x8402D46f5974301028Ee461d485748b71b0dc487",
+      "0x9D434F75564410d6e41664716defEd92d95985C1",
+      "0x33F797D0cC0a5462809c957641A09B37FeeFF41A"
+    ],
+    "ZYTMining": [
+      "0x8402D46f5974301028Ee461d485748b71b0dc487",
+      "0x36fa17d24dD706c5a9F61e4Afb47eD3C357b349e",
+      "0xf6Fa72Dd11E0426419D3c3aA75e91730E75B0C4C",
+      "0x9D434F75564410d6e41664716defEd92d95985C1",
+      "0x33F797D0cC0a5462809c957641A09B37FeeFF41A"
+    ],
+    "ZYTDeflation": [
+      "0x8402D46f5974301028Ee461d485748b71b0dc487",
+      "0x36fa17d24dD706c5a9F61e4Afb47eD3C357b349e",
+      "0x7e3507050db25AD09f2D772Df72C4bea3bae0b04"
+    ],
+    "ZYTLiquidityCreator": [
+      "0x9D434F75564410d6e41664716defEd92d95985C1",
+      "0x33F797D0cC0a5462809c957641A09B37FeeFF41A",
+      "0xB7926C0430Afb07AA7DEfDE6DA862aE0Bde767bc",
+      "0x000000000000000000000000000000000000dEaD"
+    ]
+  },
+  "libraries": {
+    "contracts/ZYTCompute.sol:ZYTCompute": "0xAaFC62D2239B0D8C5ffA8c84E749cFb891eF45C9"
+  },
+  "seed": {
+    "zyt": "2100000000",
+    "usdt": "21000",
+    "lpLocked": "6640783086353596597196676"
+  }
+}

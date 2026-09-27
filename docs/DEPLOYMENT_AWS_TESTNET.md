@@ -1,8 +1,8 @@
 # ZYT 众赢币 — AWS 测试链部署流程
 
-> **适用场景**：合约已部署在 BSC 测试链（chainId 97，第十套 v9.1），需要把链下服务（keeper）与前端（dapp）部署到 AWS Ubuntu 服务器，供测试与演示使用。
-> **与主网部署的三处关键差异**：链参数走 testnet；USDT 用 Mock 代币；keeper 签名钱包必须复用已登记在合约里的地址，不能用新钱包。
-> **关联文档**：`docs/DEPLOYMENT.md`（生产部署指南）/ `docs/DEPLOYMENT_ONLINE.md`（逐步骤操作手册）/ `zyt-keeper/deploy/nginx-zyt.conf`
+> **适用场景**：合约已部署在 BSC 测试链（chainId 97，第十套 v9.1），需要把链下服务（keeper）与前端（dapp）部署到 AWS Ubuntu 服务器，供测试与演示使用。  
+> **与主网部署的三处关键差异**：链参数走 testnet；USDT 用 Mock 代币；keeper 签名钱包必须复用已登记在合约里的地址，不能用新钱包。  
+> **关联文档**：`docs/DEPLOYMENT_AWS_MAINNET.md`（主网正式版部署流程，含需替换项清单）/ `docs/主网上线防复发检查清单.md` / `zyt-keeper/deploy/nginx-zyt.conf`  
 > **编制日期**：2026-09-25
 
 ---
@@ -11,44 +11,45 @@
 
 动手前先把下面两张表填齐。缺任何一项都会在后续卡住。
 
+
 ### 0.1 链侧信息（测试链，已确认值）
 
-| 项 | 值 |
-| --- | --- |
-| 网络 | BSC Testnet |
-| chainId | 97 |
-| RPC | `https://bsc-testnet-rpc.publicnode.com` |
-| 合约套件 | 第十套 v9.1（2026-09-24，双计修复版） |
-| USDT 口径 | MockUSDT（非官方 USDT） |
-| ZYTConfig | `0x8402D46f5974301028Ee461d485748b71b0dc487` |
-| ZYTToken | `0x9D434F75564410d6e41664716defEd92d95985C1` |
-| ZYTPoolManager | `0x36fa17d24dD706c5a9F61e4Afb47eD3C357b349e` |
-| ZYTMining | `0x7e3507050db25AD09f2D772Df72C4bea3bae0b04` |
-| ZYTDeflation | `0x80a98C926755604A5582289eecd3eB25C816EF8b` |
-| ZYTForceSell | `0xCC89c59Cc9b47C7D32545F8f53E0633d3e01a90D` |
-| ZYTReferral | `0xf6Fa72Dd11E0426419D3c3aA75e91730E75B0C4C` |
-| ZYTLiquidityCreator | `0x9bFccB1ADb2da1d634aC9CF426e5e276754a6F74` |
-| MockUSDT | `0x33F797D0cC0a5462809c957641A09B37FeeFF41A` |
-| Pair（ZYT/USDT） | `0xc16B3D23fc1C923EA35fBbfc6B4f1d54dbcAB0aa` |
-| 部署者地址 | `0xB7233A003C37Beb100C4eFCF82793D24B90179F9` |
-| keeper 签名地址 | `0x09BeD12b5956E1E53668Aa10E242766E3aE3B641` |
-| 索引起点块 | `132873780`（部署块 132873786 前 6 块） |
-| 部署记录文件 | `zyt-contracts/deployments/v91-testnet-20260924.json` |
+| 项                   | 值                                                     |
+| ------------------- | ----------------------------------------------------- |
+| 网络                  | BSC Testnet                                           |
+| chainId             | 97                                                    |
+| RPC                 | `https://bsc-testnet-rpc.publicnode.com`              |
+| 合约套件                | 第十套 v9.1（2026-09-24，双计修复版）                            |
+| USDT 口径             | MockUSDT（非官方 USDT）                                    |
+| ZYTConfig           | `0x8402D46f5974301028Ee461d485748b71b0dc487`          |
+| ZYTToken            | `0x9D434F75564410d6e41664716defEd92d95985C1`          |
+| ZYTPoolManager      | `0x36fa17d24dD706c5a9F61e4Afb47eD3C357b349e`          |
+| ZYTMining           | `0x7e3507050db25AD09f2D772Df72C4bea3bae0b04`          |
+| ZYTDeflation        | `0x80a98C926755604A5582289eecd3eB25C816EF8b`          |
+| ZYTForceSell        | `0xCC89c59Cc9b47C7D32545F8f53E0633d3e01a90D`          |
+| ZYTReferral         | `0xf6Fa72Dd11E0426419D3c3aA75e91730E75B0C4C`          |
+| ZYTLiquidityCreator | `0x9bFccB1ADb2da1d634aC9CF426e5e276754a6F74`          |
+| MockUSDT            | `0x33F797D0cC0a5462809c957641A09B37FeeFF41A`          |
+| Pair（ZYT/USDT）      | `0xc16B3D23fc1C923EA35fBbfc6B4f1d54dbcAB0aa`          |
+| 部署者地址               | `0xB7233A003C37Beb100C4eFCF82793D24B90179F9`          |
+| keeper 签名地址         | `0x09BeD12b5956E1E53668Aa10E242766E3aE3B641`          |
+| 索引起点块               | `132873780`（部署块 132873786 前 6 块）                      |
+| 部署记录文件              | `zyt-contracts/deployments/bscTestnet-20260924.json` |
 
 > **keeper 钱包必须复用**。`0x09BeD12b...` 已写进 `ZYTConfig.keeperAddress` 与 `ZYTForceSell.keeper`，换成新钱包后每日快照交易会被合约拒绝。该地址需要持有测试链 BNB 支付 gas，部署记录里记为 0.05 BNB。
 
 ### 0.2 服务器侧信息（待填）
 
-| 项 | 填什么 |
-| --- | --- |
-| AWS 区域 | 建议选 `ap-southeast-1`（新加坡）或 `us-east-1` |
-| 实例类型 | t3.small（2 核 2G） |
-| 操作系统 | Ubuntu Server 24.04 LTS |
-| 弹性 IP | 分配后关联实例 |
-| 域名 | AWS Route 53 注册的域名 |
-| 部署路径 | `/opt/zyt/zyt` |
-| 站点根目录 | `/var/www/html` |
-| 服务器登录用户 | `ubuntu`（AWS Ubuntu 镜像默认） |
+| 项       | 填什么                                    |
+| ------- | -------------------------------------- |
+| AWS 区域  | 建议选 `ap-southeast-1`（新加坡）或 `us-east-1` |
+| 实例类型    | t3.small（2 核 2G）                       |
+| 操作系统    | Ubuntu Server 24.04 LTS                |
+| 弹性 IP   | 分配后关联实例                                |
+| 域名      | AWS Route 53 注册的域名                     |
+| 部署路径    | `/opt/zyt/zyt`                         |
+| 站点根目录   | `/var/www/html`                        |
+| 服务器登录用户 | `ubuntu`（AWS Ubuntu 镜像默认）              |
 
 ---
 
@@ -56,11 +57,11 @@
 
 先明确哪些组件上服务器，避免多余操作。
 
-| 组件 | 是否上服务器 | 说明 |
-| --- | --- | --- |
-| `zyt-contracts` | 否 | 合约已部署到测试链，服务器只作备份，不参与运行 |
-| `zyt-keeper` | 是 | Node 常驻进程，含索引器、每日快照、账本对账、监控告警、HTTP API |
-| `zyt-dapp` | 是 | 本地构建出的静态产物，由 Nginx 托管 |
+| 组件              | 是否上服务器 | 说明                                     |
+| --------------- | ------ | -------------------------------------- |
+| `zyt-contracts` | 否      | 合约已部署到测试链，服务器只作备份，不参与运行                |
+| `zyt-keeper`    | 是      | Node 常驻进程，含索引器、每日快照、账本对账、监控告警、HTTP API |
+| `zyt-dapp`      | 是      | 本地构建出的静态产物，由 Nginx 托管                  |
 
 **运行架构**
 
@@ -117,11 +118,11 @@
 
 **怎么做**：EC2 实例详情页 Security 标签，点安全组 ID 进入，编辑 Inbound rules，添加三条。
 
-| 类型 | 端口 | 来源 | 用途 |
-| --- | --- | --- | --- |
-| SSH | 22 | My IP | 远程登录 |
-| HTTP | 80 | 0.0.0.0/0 | 页面与证书签发 |
-| HTTPS | 443 | 0.0.0.0/0 | 加密访问 |
+| 类型    | 端口  | 来源        | 用途      |
+| ----- | --- | --------- | ------- |
+| SSH   | 22  | My IP     | 远程登录    |
+| HTTP  | 80  | 0.0.0.0/0 | 页面与证书签发 |
+| HTTPS | 443 | 0.0.0.0/0 | 加密访问    |
 
 **不要开放 8080**。keeper 的 API 只经 Nginx 反代访问，直接暴露到公网属于多余风险面。
 
@@ -348,7 +349,7 @@ Host github.com
   IdentitiesOnly yes
 EOF
 
-cd /opt/zyt && git clone git@github.com:zafeggg/zyt.git .
+cd /opt/zyt/zyt && git clone git@github.com:zafeggg/zyt.git .
 ```
 
 **怎么验证**：
@@ -473,6 +474,7 @@ ls /var/www/html/index.html /var/www/html/assets
 
 ## 六、keeper 配置
 
+
 ### 步骤 19 写入环境文件
 
 **做什么**：填测试链参数。`zyt-keeper/.env` 不要从本地上传，在服务器上重写更干净。
@@ -519,6 +521,15 @@ CORS_ORIGIN=*
 # ===== 存储 =====
 DB_URL=mysql://zyt_keeper:<强密码>@127.0.0.1:3306/zyt_keeper
 
+# ===== 强制卖出追踪与到期结算 =====
+FORCESELL_ENABLED=true
+FORCESELL_SYNC_MS=600000
+# 到期自动销毁调度：默认关闭，开启后 keeper 会真实销毁未卖足用户的代币（链上不可逆）
+FORCESELL_SETTLE_ENABLED=false
+FORCESELL_SETTLE_MS=3600000
+FORCESELL_SETTLE_MAX_PER_RUN=10
+FORCESELL_SETTLE_TX_GAP_MS=3000
+
 # ===== 告警（可留空）=====
 ALERT_WEBHOOK_URL=
 EOF
@@ -547,12 +558,12 @@ grep -E "^(DB_URL|API_PORT|START_BLOCK|CREATOR_ADDR)=" /opt/zyt/zyt-keeper/.env
 
 **怎么验证**：
 
-| 键 | 期望值 | 填错的后果 |
-| --- | --- | --- |
-| `DB_URL` | `mysql://zyt_keeper:<强密码>@127.0.0.1:3306/zyt_keeper` | 键名写成 `DB_PATH` 会被完全忽略，程序落回内存库，重启后账本归零并全量重扫 |
-| `API_PORT` | `8080` | 与 Nginx 反代端口不一致时，Nginx 连不上 keeper |
-| `START_BLOCK` | `132873780` | 填 0 会从创世块扫，耗时很久；填大了漏事件 |
-| `CREATOR_ADDR` | `0x9bFccB1A...` | 留空则跳过订阅，前端底池累计数据缺失 |
+| 键              | 期望值                                                  | 填错的后果                                      |
+| -------------- | ---------------------------------------------------- | ------------------------------------------ |
+| `DB_URL`       | `mysql://zyt_keeper:<强密码>@127.0.0.1:3306/zyt_keeper` | 键名写成 `DB_PATH` 会被完全忽略，程序落回内存库，重启后账本归零并全量重扫 |
+| `API_PORT`     | `8080`                                               | 与 Nginx 反代端口不一致时，Nginx 连不上 keeper          |
+| `START_BLOCK`  | `132873780`                                          | 填 0 会从创世块扫，耗时很久；填大了漏事件                     |
+| `CREATOR_ADDR` | `0x9bFccB1A...`                                      | 留空则跳过订阅，前端底池累计数据缺失                         |
 
 ### 步骤 21 探测 RPC 可用性
 
@@ -627,6 +638,7 @@ pm2 conf pm2-logrotate
 ---
 
 ## 七、Nginx 与域名
+
 
 ### 步骤 25 写站点配置
 
@@ -898,16 +910,16 @@ pm2 restart zyt-keeper
 
 ### 仓库现成的运维脚本
 
-| 脚本 | 用途 |
-| --- | --- |
-| `npm run snapshot` | 立即触发一次每日快照 |
-| `npm run reconcile` | 手动跑一次链上链下对账 |
-| `node scripts/api-check.mjs` | 巡检 API 各端点 |
-| `node scripts/cron-smoke.mjs` | 校验 cron 表达式与触发时刻 |
-| `node scripts/monitor-check.mjs` | 单独跑一次监控规则 |
-| `node scripts/forcesell-sync-now.mjs` | 立即同步强制卖出窗口状态 |
-| `node scripts/backfill-history.mjs` | 历史事件补拉，用于补账本缺口 |
-| `node scripts/rpc-probe.mjs` | 探测各公共 RPC 对历史日志的支持 |
+| 脚本                                    | 用途                 |
+| ------------------------------------- | ------------------ |
+| `npm run snapshot`                    | 立即触发一次每日快照         |
+| `npm run reconcile`                   | 手动跑一次链上链下对账        |
+| `node scripts/api-check.mjs`          | 巡检 API 各端点         |
+| `node scripts/cron-smoke.mjs`         | 校验 cron 表达式与触发时刻   |
+| `node scripts/monitor-check.mjs`      | 单独跑一次监控规则          |
+| `node scripts/forcesell-sync-now.mjs` | 立即同步强制卖出窗口状态       |
+| `node scripts/backfill-history.mjs`   | 历史事件补拉，用于补账本缺口     |
+| `node scripts/rpc-probe.mjs`          | 探测各公共 RPC 对历史日志的支持 |
 
 ### 数据库备份
 
@@ -971,31 +983,31 @@ pm2 start zyt-keeper
 
 按出错概率排序。
 
-| # | 易错点 | 表现 | 处置 |
-| --- | --- | --- | --- |
-| 1 | Nginx `proxy_pass` 末尾漏斜杠 | `/api/*` 全部 404 | 改为 `proxy_pass http://127.0.0.1:8080/;` |
-| 2 | 环境变量写成 `DB_PATH` | 程序静默跑内存库，重启账本归零 | 键名必须是 `DB_URL`，且值为 `mysql://` 开头 |
-| 3 | 前端用 `npm run build:bsc` | 构建出主网版本，指向 chainId 56 | 测试链用 `VITE_CHAIN=bscTestnet npm run build` |
-| 4 | 上传了本地 `node_modules` | Linux 上原生模块加载失败 | 服务器上 `npm ci --omit=dev` 重装 |
-| 5 | 前端打包时多一层目录 | 站点根出现 `dist/index.html`，页面白屏 | 在 `dist` 目录内执行 `tar -czf ... .` |
-| 6 | `START_BLOCK` 填 0 | 从创世块扫，耗费极长时间 | 填 `132873780` |
-| 7 | 换新钱包做 keeper 签名 | 快照交易被合约拒绝 | 必须复用 `0x09BeD12b...` 对应私钥 |
-| 8 | 开放了 8080 到公网 | API 直接被外部访问 | 安全组不开该端口，仅 Nginx 内网反代 |
-| 9 | 服务器时区非 UTC | 快照触发时刻错位 | `timedatectl set-timezone UTC` |
-| 10 | 未配 `API_ADMIN_TOKEN` | `/reconcile` 恒返 403 | 在 `.env` 中配置强随机串 |
+| #  | 易错点                      | 表现                           | 处置                                         |
+| -- | ------------------------ | ---------------------------- | ------------------------------------------ |
+| 1  | Nginx `proxy_pass` 末尾漏斜杠 | `/api/*` 全部 404              | 改为 `proxy_pass http://127.0.0.1:8080/;`    |
+| 2  | 环境变量写成 `DB_PATH`         | 程序静默跑内存库，重启账本归零              | 键名必须是 `DB_URL`，且值为 `mysql://` 开头           |
+| 3  | 前端用 `npm run build:bsc`  | 构建出主网版本，指向 chainId 56        | 测试链用 `VITE_CHAIN=bscTestnet npm run build` |
+| 4  | 上传了本地 `node_modules`     | Linux 上原生模块加载失败              | 服务器上 `npm ci --omit=dev` 重装                |
+| 5  | 前端打包时多一层目录               | 站点根出现 `dist/index.html`，页面白屏 | 在 `dist` 目录内执行 `tar -czf ... .`            |
+| 6  | `START_BLOCK` 填 0        | 从创世块扫，耗费极长时间                 | 填 `132873780`                              |
+| 7  | 换新钱包做 keeper 签名          | 快照交易被合约拒绝                    | 必须复用 `0x09BeD12b...` 对应私钥                  |
+| 8  | 开放了 8080 到公网             | API 直接被外部访问                  | 安全组不开该端口，仅 Nginx 内网反代                      |
+| 9  | 服务器时区非 UTC               | 快照触发时刻错位                     | `timedatectl set-timezone UTC`             |
+| 10 | 未配 `API_ADMIN_TOKEN`     | `/reconcile` 恒返 403          | 在 `.env` 中配置强随机串                           |
 
 ## 附录 B 与主网部署的差异对照
 
-| 项 | 测试链（本文档） | 主网 |
-| --- | --- | --- |
-| `CHAIN_ID` | 97 | 56 |
-| RPC | `bsc-testnet-rpc.publicnode.com` | `bsc-rpc.publicnode.com` |
-| USDT | MockUSDT `0x33F797D0...` | 真实 USDT `0x55d39832...` |
-| keeper 签名钱包 | 必须复用 `0x09BeD12b...` | 建议新建独立钱包 |
-| 合约 owner | 部署者 EOA | Gnosis Safe 多签 |
-| `CORS_ORIGIN` | 可留 `*` | 改为前端域名 |
-| 合约地址核对 | 对照 `deployments/v91-testnet-20260924.json` | 对照主网部署记录 |
-| 白名单 | 测试阶段按需放开 | 上线前必须开启买入白名单 |
+| 项             | 测试链（本文档）                                   | 主网                       |
+| ------------- | ------------------------------------------ | ------------------------ |
+| `CHAIN_ID`    | 97                                         | 56                       |
+| RPC           | `bsc-testnet-rpc.publicnode.com`           | `bsc-rpc.publicnode.com` |
+| USDT          | MockUSDT `0x33F797D0...`                   | 真实 USDT `0x55d39832...`  |
+| keeper 签名钱包   | 必须复用 `0x09BeD12b...`                       | 建议新建独立钱包                 |
+| 合约 owner      | 部署者 EOA                                    | Gnosis Safe 多签           |
+| `CORS_ORIGIN` | 可留 `*`                                     | 改为前端域名                   |
+| 合约地址核对        | 对照 `deployments/bscTestnet-20260924.json` | 对照主网部署记录                 |
+| 白名单           | 测试阶段按需放开                                   | 上线前必须开启买入白名单             |
 
 ---
 

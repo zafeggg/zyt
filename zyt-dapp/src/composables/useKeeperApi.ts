@@ -11,12 +11,14 @@ const TIMEOUT_MS = 4000;
 
 /** v17：底池创建合约累计数据（keeper /stats 从链上读取） */
 export interface KeeperCreator {
-  // v9：锁仓合约口径
+  // v9：Creator 持有口径
   lockedLiquidity?: string;
   totalZytSeeded?: string;
   totalUsdtSeeded?: string;
   totalDeflationZytOut?: string;
   totalDeflationUsdtOut?: string;
+  // v9.1：owner 提取累计（用于区分每日通缩报销与 owner 主动提取）
+  totalLpWithdrawn?: string;
 }
 
 export interface KeeperStats {

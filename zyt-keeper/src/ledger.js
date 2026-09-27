@@ -35,7 +35,11 @@ export class Ledger {
     const seenSoldTx = new Set();
     // 按 chain_id 过滤重放——防本地联调（31337）与 testnet 事件混入同一张 events 表
     const rows = await db
-      .all("SELECT name, from_addr, to_addr, amount, extra, created_at, tx_hash FROM events WHERE chain_id=? ORDER BY block, log_index", [CONFIG.chainId]);
+      .all("SELECT name, from_addr, to_addr, amount, extra, created_at, tx_hash, block, block_time FROM events WHERE chain_id=? ORDER BY block, log_index", [CONFIG.chainId]);
+    // 2026-09-26：补齐区块时间戳（power_day / exit_day 与合约 block.timestamp/86400 同口径）
+    // 背景：原实现用 Date.now() 作复利起点，补拉或清库重建时历史入金的 power_day 被写成「重建当天」，
+    //       复利天数归零导致算力偏低（实测账本 1500 vs 链上 1530.15）。改按事件所属区块时间戳换算。
+    await this._ensureBlockTimes(rows);
     const upsertSql = `
       INSERT INTO users (address, deposit_total, withdraw_total, converted_total, received_value, exit_day, dynamic_quota, dynamic_withdrawn, power_base, power_day, is_exited, updated_at)
       VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
@@ -55,10 +59,10 @@ export class Ledger {
     for (const r of rows) {
       const extra = JSON.parse(r.extra || "{}");
       if (r.name === "Deposited") {
+        const day = this._dayOf(r);
         await this._apply(upsertSql, r.to_addr || extra.user, (u) => {
           const usdt = BigInt(extra.usdt ?? 0);
           const power = BigInt(extra.power ?? 0);
-          const today = Math.floor(Date.now() / 86400000);
           u.deposit_total += usdt;
           // v9：动态额度叠加（加速释放载体），复投重置出局状态
           u.dynamic_quota += usdt * this.dynamicQuotaMul;
@@ -66,11 +70,11 @@ export class Ledger {
           u.exit_day = 0;
           // P1-12：与合约同口径，先固化此前累积的复利再重置起点
           if (u.power_base > 0n) {
-            u.power_base = this._compound(u.power_base, Math.max(today - u.power_day, 0));
+            u.power_base = this._compound(u.power_base, Math.max(day - u.power_day, 0));
           }
           u.power_base += power;
-          u.power_day = today;
-          this._applyExit(u);
+          u.power_day = day;
+          this._applyExit(u, day);
         });
       } else if (r.name === "RefPaid") {
         // v9 加速释放：推荐奖励逐笔消耗 receiver 动态额度
@@ -87,28 +91,31 @@ export class Ledger {
           if (seenSoldTx.has(txKey)) continue;
           seenSoldTx.add(txKey);
         }
+        const day = this._dayOf(r);
         await this._apply(upsertSql, extra.user || extra.seller, (u) => {
           u.withdraw_total += BigInt(extra.usdtOut ?? 0);
-          this._applyExit(u);
+          this._applyExit(u, day);
         });
       } else if (r.name === "StaticExited") {
-        // 链上出局事件：记录出局日（事件无时间参数，用入库时间近似出块日）
+        // 链上出局事件：记录出局日（按区块时间戳换算，与合约同日口径）
         const addr = extra.user || r.from_addr;
+        const day = this._dayOf(r);
         await this._apply(upsertSql, addr, (u) => {
           u.is_exited = 1;
-          if (!u.exit_day) u.exit_day = Math.floor(Number(r.created_at || 0) / 86400);
+          if (!u.exit_day) u.exit_day = day;
         });
       } else if (r.name === "TransferLedger") {
         // P1-7：转账折算记账。转出计入提取额，转入计入受赠额（额度随币转移）
         const v = BigInt(extra.usdtValue ?? 0);
         const isOut = extra.isOut === true || extra.isOut === "true";
+        const day = this._dayOf(r);
         await this._apply(upsertSql, extra.user, (u) => {
           if (isOut) {
             u.withdraw_total += v;
-            this._applyExit(u);
+            this._applyExit(u, day);
           } else {
             u.received_value += v;
-            this._applyExit(u);
+            this._applyExit(u, day);
           }
         });
       }
@@ -124,7 +131,7 @@ export class Ledger {
    * 静态出局判定：累计提取 USDT 达入金 × exitMul 即停产。
    * 与合约 ZYTCompute.isStaticExited 同口径（入金与受赠双零时不判出局）。
    */
-  _applyExit(u) {
+  _applyExit(u, day) {
     // 已出局：链上不会因后续事件自动恢复（只有复投会重置，走 Deposited 分支）
     if (u.exit_day > 0) {
       u.is_exited = 1;
@@ -134,8 +141,46 @@ export class Ledger {
     const cap = u.deposit_total * this.exitMul + u.received_value;
     const exited = (u.deposit_total > 0n || u.received_value > 0n) && u.withdraw_total >= cap;
     if (exited) {
-      u.exit_day = Math.floor(Date.now() / 86400000);
+      // 出局日取事件所属区块的天数（缺省回退当前天），与合约 _markExited 的 block.timestamp/86400 同口径
+      u.exit_day = day || Math.floor(Date.now() / 86400000);
       u.is_exited = 1;
+    }
+  }
+
+  /**
+   * 事件所属区块的 UTC 天数，与合约 block.timestamp / 86400 同口径。
+   * 回退顺序：block_time（区块时间戳）→ created_at（索引入库时间）→ 当前时间。
+   */
+  _dayOf(r) {
+    const bt = Number(r.block_time || 0);
+    if (bt > 0) return Math.floor(bt / 86400);
+    const ca = Number(r.created_at || 0);
+    if (ca > 0) return Math.floor(ca / 86400);
+    return Math.floor(Date.now() / 86400000);
+  }
+
+  /**
+   * 为缺失 block_time 的事件补齐区块时间戳并写回 events 表（只拉一次，后续复用）。
+   * 依赖 provider.getBlock；单个块失败不影响其他块，该块事件由 _dayOf 回退到 created_at。
+   */
+  async _ensureBlockTimes(rows) {
+    const pending = new Map();
+    for (const r of rows) {
+      if (!r.block_time && r.block) pending.set(Number(r.block), true);
+    }
+    if (pending.size === 0) return;
+    const db = await getDb();
+    for (const block of pending.keys()) {
+      try {
+        const b = await this.provider.getBlock(block);
+        const ts = b && b.timestamp ? Number(b.timestamp) : 0;
+        if (ts > 0) {
+          await db.run("UPDATE events SET block_time=? WHERE chain_id=? AND block=?", [ts, CONFIG.chainId, block]);
+          for (const r of rows) if (Number(r.block) === block) r.block_time = ts;
+        }
+      } catch (e) {
+        logRun("ledger", "gap", `block_time 拉取失败 block=${block}: ${String(e.message).slice(0, 60)}`);
+      }
     }
   }
 
@@ -195,12 +240,28 @@ export class Ledger {
     return this._compound(BigInt(row.power_base), nowDay - row.power_day);
   }
 
-  /** 全网算力（Σ 复利后） */
-  async totalPower() {
+  /**
+   * 全网算力（Σ 复利后）。单次查询后内存计算，避免逐用户 DB 往返。
+   * @param {number} [day] 指定 UTC 天数，缺省用当前天。
+   *   快照调用必须传「合约本次将要写入的 day」，以保证 dailyInfo[day].totalPower
+   *   与合约侧 Σ _powerOf(user, day) 严格一致（分红公式的分母口径，2026-09-26 对齐）。
+   */
+  async totalPower(day) {
     const db = await getDb();
-    const rows = await db.all("SELECT address FROM users");
+    const rows = await db.all("SELECT power_base, power_day, exit_day FROM users");
+    const at = day === undefined || day === null ? Math.floor(Date.now() / 86400000) : Number(day);
     let sum = 0n;
-    for (const r of rows) sum += await this.powerOf(r.address);
+    for (const r of rows) {
+      const base = BigInt(r.power_base || 0);
+      if (base === 0n) continue;
+      const pd = Number(r.power_day || 0);
+      // 该用户当日尚未入金 → 不计入当日全网算力（与合约 _settleDividend 的 from >= powerDay 一致）
+      if (at < pd) continue;
+      // 与合约 _powerOf(user, day) 同口径：出局当日起算力归零（历史分红按日回算不受影响）
+      const exitDay = Number(r.exit_day || 0);
+      if (exitDay > 0 && at >= exitDay) continue;
+      sum += this._compound(base, at - pd);
+    }
     return sum;
   }
 

@@ -58,10 +58,20 @@ export class Keeper {
 
   /** 执行一次每日快照（含重试） */
   async runSnapshot({ force = false } = {}) {
+    // 2026-09-26：通缩暂停开关（SNAPSHOT_SKIP_BEFORE_DAY，day 口径 = UTC 天数，与链上一致）。
+    // currentDay ≤ 该值时整体跳过快照，cron / 启动 30s 自检 / 10min 自检三条路径统一拦截；
+    // 到期自动恢复执行，无需改代码或人工干预。用途：无用户期暂停通缩，避免销毁与分红空转损耗。
+    const skipBefore = Number(process.env.SNAPSHOT_SKIP_BEFORE_DAY || 0);
+    if (skipBefore > 0) {
+      const currentDay = Math.floor(Date.now() / 86400000);
+      if (currentDay <= skipBefore) {
+        logRun("keeper", "skip", `snapshot paused (day=${currentDay} ≤ SNAPSHOT_SKIP_BEFORE_DAY=${skipBefore})`);
+        return;
+      }
+    }
     if (this.lock) return;
     this.lock = true;
     const db = await getDb();
-    const day = Math.floor(Date.now() / 86400000);
     try {
       // v8：签名钱包必须就绪（写交易无法匿名执行）
       if (!this.signerReady) {
@@ -93,14 +103,23 @@ export class Keeper {
   /** 快照执行体（持有互斥锁期间运行） */
   async _runSnapshotInternal({ force }) {
     const db = await getDb();
-    const day = Math.floor(Date.now() / 86400000);
+    // 2026-09-26：day 以链上时间为准（与合约 block.timestamp/86400 同源），读块失败回退本地时间。
+    // 目的：totalPower 的计算口径必须与合约写入的 dailyInfo[day] 完全对齐（分红公式分母）。
+    let day;
+    try {
+      const latest = await this.provider.getBlock("latest");
+      day = Math.floor(Number(latest.timestamp) / 86400);
+    } catch {
+      day = Math.floor(Date.now() / 86400000);
+    }
     // 防重复：同日已跑过（force 可覆盖，用于补快照）
     const last = await db.get("SELECT day FROM snapshots ORDER BY day DESC LIMIT 1");
     if (!force && last && Number(last.day) >= day) {
       logRun("keeper", "skip", `day ${day} already snapshotted`);
       return;
     }
-    const totalPower = await this.ledger.totalPower();
+    // 分红分母口径：传本次将要写入的 day，使 totalPower === Σ _powerOf(user, day)
+    const totalPower = await this.ledger.totalPower(day);
     const errors = [];
     for (let attempt = 1; attempt <= CONFIG.keeper.retryTimes; attempt++) {
       try {
@@ -109,6 +128,10 @@ export class Keeper {
         await tx.wait();
         // 记录快照
         const dayOnChain = await this.deflation.lastSnapshotDay();
+        if (Number(dayOnChain) !== Number(day)) {
+          // 交易打包跨日（或链上时间与本地不一致）时告警：本次 totalPower 按 day 计算，链上记为 dayOnChain
+          logRun("keeper", "gap", `快照日不一致：预期 day=${day} / 链上 day=${dayOnChain}，本次 totalPower 口径需复核`);
+        }
         await db.run(
           "INSERT OR REPLACE INTO snapshots (day, total_power, created_at) VALUES (?,?,?)",
           [String(dayOnChain), String(totalPower), Math.floor(Date.now() / 1000)]

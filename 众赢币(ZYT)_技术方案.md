@@ -174,7 +174,7 @@ ZYTToken ──hook──> ZYTForceSell
 | ZYT 供应 | ZYT 总量 | 21_0000_0000 × 1e18 | 2,100,000,000 |
 | ZYT 供应 | 初始底池 ZYT | 全量 21 亿 | 100% 注入底池 |
 | ZYT 供应 | 初始价格 | 0.00001 U/ZYT | = 21000 / 21e8 |
-| ZYT 供应 | LP 锁定 | 100% 打黑洞销毁 | 不走第三方锁仓服务 |
+| ZYT 供应 | LP 锁定 | 100% 打黑洞销毁 | 不走第三方锁仓服务（**v9 起改为 LP 交 Creator 持有，v9.1 owner 可提取**） |
 | 入金 | 入金代币 | **仅 USDT** | 不支持 BNB |
 | 入金 | 最小/最大入金 | 100 / 500 U | 参数可调（minDeposit/maxDeposit） |
 | 入金 | **买入权限** | **白名单** | **全程启用**：非白名单地址 `deposit()` 直接拒绝（多签增删） |
@@ -726,7 +726,7 @@ mapping(address => uint256) public userIndex;       // 去重索引
 | ZK / 隐私技术 | 无需求 |
 | NFT 生态 | 无叙事关联，暂不引入 |
 | 原生 iOS/Android App | 移动端 H5 + PWA 足够，原生成本高、审核风险大 |
-| 第三方 LP 锁仓服务 | 已确认 LP 直接打入黑洞，无需 Unicrypt/Team.Finance |
+| 第三方 LP 锁仓服务 | 已确认 LP 直接打入黑洞，无需 Unicrypt/Team.Finance（**v9 起改由 Creator 合约持有，v9.1 owner 可提取**） |
 | 紧急回购合约 | 已确认取消，下跌控盘由动态滑点承担 |
 
 ---
@@ -743,15 +743,15 @@ mapping(address => uint256) public userIndex;       // 去重索引
 | # | 项 | v8 | v9 |
 |---|---|---|---|
 | 1 | 代币结构 | USDT→GST→ZYT 双币 | USDT↔ZYT 单币直换，GST 删除 |
-| 2 | 底池 | GST/ZYT 簿记 + Creator 建池 | 真实 ZYT/USDT Pancake 池，初始 2.1万U+21亿ZYT 组池，LP 锁仓抽通缩 |
+| 2 | 底池 | GST/ZYT 簿记 + Creator 建池 | 真实 ZYT/USDT Pancake 池，初始 2.1万U+21亿ZYT 组池，LP 交由 Creator 持有抽通缩 |
 | 3 | 入金 40% | USDT 直发（30%代数+10%技术） | 同，USDT 直发 |
 | 4 | 兑换路径 | 算力兑换 ZYT | 直接 swap：U→Z 买 / Z→U 卖 |
 | 5 | 滑点基准 | 底池 GST 减少% | 底池 USDT 减少%（初始/峰值基准） |
-| 6 | 合约数 | 10（含 GSTToken、ZYTLiquidityCreator） | 8（删 GSTToken；Creator 改建 ZYT/USDT 池并锁仓） |
+| 6 | 合约数 | 10（含 GSTToken、ZYTLiquidityCreator） | 8（删 GSTToken；Creator 改建 ZYT/USDT 池并持有 LP） |
 | 7 | 出局口径 | 静态2倍=提取≥2×本金 | 静态2倍=累计提取价值(含转出按价计)≥2×本金；动态5倍=推荐额度消耗至5×本金 |
 
 ### v9.2 架构决策（7 项，已拍板）
-1. 真实 ZYT/USDT Pancake 池；初始 2.1万U+21亿ZYT 组池；LP 双轨处置：初始 LP 转锁仓合约（仅池合约可每日抽 2% 通缩份额，人类不可撤）；每笔入金 60% 组 LP 后凭证转黑洞销毁（落实「并销毁」，永不撤出）。
+1. 真实 ZYT/USDT Pancake 池；初始 2.1万U+21亿ZYT 组池；LP 交由 Creator 持有（仅池合约可每日抽 2% 通缩份额；v9.1 起 owner 可经 `withdrawLp` 提取，上线后 owner 为 W2 治理多签）；每笔入金 60% 组 LP 后凭证转黑洞销毁（落实「并销毁」，永不撤出）。
 2. 入金 40% USDT 直发（30%代数+10%技术），不参与 ZYT 通胀。
 3. 强制卖出 keeper 定时触发 settleExpired，逾期自动销毁未卖差额。
 4. 买币门槛（1000-2000万档）：入单即给买额（入单 1000U → 买 1000U 额度）。
@@ -764,13 +764,13 @@ mapping(address => uint256) public userIndex;       // 去重索引
 ### v9.3 合约清单（8 合约）
 | 合约 | 职责 |
 |---|---|
-| ZYTToken | ZYT 本体；transfer 内嵌滑点+强卖计时；铸/销；与锁仓 LP 交互 |
+| ZYTToken | ZYT 本体；transfer 内嵌滑点+强卖计时；铸/销；与 Creator 持有的 LP 交互 |
 | ZYTPoolManager | swap(买/卖)、滑点档、阶段门控、买额、每日通缩抽池(1%烧+1%分红) |
 | ZYTReferral | 推荐关系；新档 1代7%/2-10代2%/11-20代0.5%；直推数=代数 |
 | ZYTMining | 算力(入金即生、日复利1%)、分红按日结算、出局(静态2倍/动态5倍) |
 | ZYTDeflation | 每日 08:00 快照、通缩至 500万枚停止 |
 | ZYTForceSell | 4期 20/10/10/10 计时、settleExpired、转账视同卖出 |
-| ZYTLiquidityCreator | 组 ZYT/USDT 初始池并锁仓 |
+| ZYTLiquidityCreator | 组 ZYT/USDT 初始池并持有 LP（每日通缩报销 + owner 可提取） |
 | ZYTConfig | 参数集(可调：起投 100-500U、各比例、阶段阈值) |
 
 ### v9.4 参数总表
@@ -791,7 +791,7 @@ mapping(address => uint256) public userIndex;       // 去重索引
 | 阶段 | <1000万只卖 / 1000-2000万买额1:1 / ≥2000万自由（度量口径 = 池 USDT 余额） |
 | 起投 | 最小 100U / 单笔上限 500U（均可调） |
 | 快照 | 每日 08:01 北京 |
-| LP 处置 | 初始 LP 锁仓抽通缩；增量 LP（入金 60%）凭证黑洞销毁 |
+| LP 处置 | 初始 LP 由 Creator 持有抽通缩（v9.1 起 owner 可提取）；增量 LP（入金 60%）凭证黑洞销毁 |
 
 ### v9.5 核心机制
 
@@ -802,7 +802,7 @@ mapping(address => uint256) public userIndex;       // 去重索引
 **swap 卖（Z→U）**：滑点 5%（按档升至 80%）；滑点收入当日累积，每日 08:01 快照时统一结算：30% 营销 Safe + 30% 算力加权进分红池 + 40% 黑洞。卖出额计入发送方累计提取。
 
 **每日 08:01 快照（北京）**：keeper 触发 dailySnapshot，两件事：
-1. 通缩抽池：对锁仓合约持有的初始 LP 凭证 burn 2% → removeLiquidity 抽出 ZYT_a 与 U_b → ZYT_a 按 1% 烧黑洞 + 1% 按算力加权登记当日分红（pendingDividend）；U_b 直接转回 pair 并调 sync()（USDT 回注，净效果只减池内 ZYT，池 USDT 不变，价格单边上行，不干扰滑点档位）。通缩至池剩 500 万枚 ZYT 停止（约 299 天）。
+1. 通缩抽池：对 Creator 持有的初始 LP 凭证 burn 2% → removeLiquidity 抽出 ZYT_a 与 U_b → ZYT_a 按 1% 烧黑洞 + 1% 按算力加权登记当日分红（pendingDividend）；U_b 直接转回 pair 并调 sync()（USDT 回注，净效果只减池内 ZYT，池 USDT 不变，价格单边上行，不干扰滑点档位）。通缩至池剩 500 万枚 ZYT 停止（约 299 天）。
 2. 滑点收入结算（如上 30/30/40）。
 
 **加速释放（按额度驱动）**：出局以额度消耗推进。动态额度 5×本金被推荐奖励逐笔消耗（推荐越多消耗越快），静态额度 2×本金被提取逐笔消耗；任一额度耗尽即触发对应出局。复投注入新额度立即恢复释放节奏。
@@ -816,11 +816,11 @@ mapping(address => uint256) public userIndex;       // 去重索引
 - 动态5倍：累计推荐 USDT 达 5×本金（动态额度耗尽）→ 动态出局，停止推荐奖励发放。
 - 复投（再入金）：动态额度按新入金叠加（+5×新入金）、静态复利起点先固化再重置（沿用 P1-12 口径），出局状态解除，历史提取累计保留继续累计。
 
-**强制卖出**：首收币起 4×15天 窗口，须卖 20/10/10/10%（每期按期初持币余额计），逾期 keeper 调 settleExpired 销毁差额。转账扣 10% 滑点且接收方继承计时。豁免白名单：pair、Router、池合约、锁仓合约、Creator、黑洞、营销/技术 Safe。
+**强制卖出**：首收币起 4×15天 窗口，须卖 20/10/10/10%（每期按期初持币余额计），逾期 keeper 调 settleExpired 销毁差额。转账扣 10% 滑点且接收方继承计时。豁免白名单：pair、Router、池合约、Creator、黑洞、营销/技术 Safe。
 
 **阶段门控**：度量口径 = 池 USDT 余额。<1000万只卖 / 1000-2000万买额1:1 / ≥2000万自由。
 
-**LP 处置双轨**：初始 LP（锁仓合约持有）承载每日通缩抽取；增量 LP（每笔入金 60%）凭证黑洞销毁永不撤出，池深只增不减（除通缩）。
+**LP 处置双轨**：初始 LP（Creator 持有，v9.1 起 owner 可经 `withdrawLp` 提取）承载每日通缩抽取；增量 LP（每笔入金 60%）凭证黑洞销毁永不撤出，池深只增不减（除通缩）。
 
 **价格自动上行**：通缩只减池 ZYT、不动池 USDT → 每日快照后价格单边上移（约 2%/日，叠加买卖波动）。
 
@@ -853,7 +853,7 @@ mapping(address => uint256) public userIndex;       // 去重索引
 其他待办：
 - 全部 8 合约需重设计 + 重部署（当前 v8 链上，未动）。
 - 部署后必做：bscscan verify、keeper 地址与 INDEXER_START_BLOCK 更新、前端 config 地址更新、Safe 多签接入（营销/技术）。
-- LP 锁仓合约须审计（仅池合约可抽通缩，防 rug）。
+- Creator 须审计（LP 两条出口：常态仅池合约可抽通缩；v9.1 起 owner 可 `withdrawLp` 提取，防 rug）。
 - 通缩至 500万枚后分红停止（有限期模型），须向用户透明披露。
 - 转账计入提取的精度（按当时价快照）需防御预言操纵（沿用 08:01 快照价）。
 - 增量 LP 凭证黑洞销毁不可逆，部署前比例与地址必须最终确认。

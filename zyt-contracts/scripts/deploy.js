@@ -2,6 +2,8 @@
 /* global ethers hre */
 const { ethers } = require("hardhat");
 const readline = require("node:readline");
+const fs = require("node:fs");
+const path = require("node:path");
 
 /**
  * @notice 众赢币 ZYT 部署脚本（v9，2026-09-24）
@@ -269,9 +271,63 @@ async function main() {
   console.log("Market             :", market);
   console.log("Technical          :", technical);
   console.log("Keeper             :", process.env.KEEPER_ADDRESS || deployer.address);
+
+  // ---------- 14. 部署记录落盘（2026-09-26 新增） ----------
+  // 为什么：verify / post-deploy-check / smoke / keeper 部署都依赖这份记录。
+  // 手抄地址易错（曾发生「链上实现落后于修复」的事故），统一由此文件作为唯一事实源。
+  const deployBlock = await ethers.provider.getBlockNumber();
+  const record = {
+    version: "v9.1",
+    network: hre.network.name,
+    chainId: Number((await ethers.provider.getNetwork()).chainId),
+    deployedAt: new Date().toISOString(),
+    deployBlock,
+    indexerStartBlock: deployBlock - 6, // 索引起点（部署块前 6 块，留重组余量）
+    usdtMock: useMockUsdt,
+    factory: factoryAddr,
+    contracts: {
+      ZYTConfig: configAddr,
+      ZYTToken: zytAddr,
+      ZYTLiquidityCreator: creatorAddr,
+      ZYTPoolManager: poolAddr,
+      ZYTReferral: referralAddr,
+      ZYTForceSell: forceSellAddr,
+      ZYTMining: miningAddr,
+      ZYTDeflation: deflationAddr,
+      ZYTCompute: computeAddr,
+      USDT: usdtAddr,
+      "Pair(ZYT/USDT)": pairAddr,
+    },
+    roles: { deployer: deployer.address, market, technical, keeper: process.env.KEEPER_ADDRESS || deployer.address },
+    // verify 用构造参数（与上面部署语句一一对应，改部署语句时同步改这里）
+    constructorArgs: {
+      ZYTCompute: [],
+      ZYTConfig: [],
+      ZYTToken: [BLACK_HOLE],
+      ZYTReferral: [],
+      ZYTForceSell: [zytAddr],
+      ZYTPoolManager: [configAddr, zytAddr, usdtAddr],
+      ZYTMining: [configAddr, poolAddr, referralAddr, zytAddr, usdtAddr],
+      ZYTDeflation: [configAddr, poolAddr, miningAddr],
+      ZYTLiquidityCreator: [zytAddr, usdtAddr, factoryAddr, BLACK_HOLE],
+    },
+    libraries: { "contracts/ZYTCompute.sol:ZYTCompute": computeAddr },
+    seed: { zyt: ethers.formatUnits(ZYT_MAX, 18), usdt: ethers.formatUnits(SEED_USDT, 18), lpLocked: locked.toString() },
+  };
+  const outDir = path.join(__dirname, "..", "deployments");
+  fs.mkdirSync(outDir, { recursive: true });
+  const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, "");
+  const outFile = path.join(outDir, `${hre.network.name === "bsc" ? "mainnet" : hre.network.name}-${stamp}.json`);
+  fs.writeFileSync(outFile, JSON.stringify(record, null, 2));
+  console.log("\n部署记录已写入:", path.relative(path.join(__dirname, ".."), outFile));
+  console.log("后续脚本用法：");
+  console.log("  node scripts/mainnet-preflight.mjs --addr", path.relative(path.join(__dirname, ".."), outFile));
+  console.log("  npx hardhat run scripts/verify-all-mainnet.js --network bsc   # 自动读最新主网记录");
+  console.log("  node scripts/post-deploy-check-mainnet.mjs --addr", path.relative(path.join(__dirname, ".."), outFile));
+
   console.log("\n⚠️ 生产环境：请将各合约 owner 转移至 Gnosis Safe 多签（营销/技术 Safe 见《上线钱包准备清单_方案A》）");
-  console.log("⚠️ keeper 侧：更新 .env 合约地址与 INDEXER_START_BLOCK，每日 08:01 cron 触发 dailySnapshot");
-  console.log("⚠️ 前端侧：SwapPanel 接 mining.buy / mining.sellZyt（approve 对象 pool），仪表盘读真池 view");
+  console.log("⚠️ keeper 侧：把上面地址与 indexerStartBlock 填进 zyt-keeper/.env（每日 08:01 cron 触发 dailySnapshot）");
+  console.log("⚠️ 前端侧：把上面地址填进 zyt-dapp/src/config/index.ts 对应链段");
 }
 
 main().catch((error) => {

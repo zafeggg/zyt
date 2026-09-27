@@ -2,7 +2,7 @@
 
 > 版本：v2.0（2026-09-24）｜ 依据：contracts/*.sol 源码（v9 落地代码），非设计稿
 > v9 范式：弃 GST，USDT↔ZYT 单币直换。真实 PancakeSwap V2 pair 为唯一底池，
-> ZYTPoolManager 是唯一交易通道（gate 模式），LP 双轨处置（初始锁仓抽通缩 + 增量凭证黑洞）。
+> ZYTPoolManager 是唯一交易通道（gate 模式），LP 由 Creator 持有（每日抽 2% 通缩，owner 可提取）。
 > v7/v8 历史接口见《技术方案》冻结正文与 git 历史。
 
 ## 0. 全局约定与部署接线
@@ -41,7 +41,7 @@ referral.setMining(mining)
 creator.setPoolManager(pool)
 mining.setDeflation(deflation)
 forceSell.setKeeper(keeperAddress)
-creator.createInitialPool(21亿 ZYT, 2.1万 USDT)   # 建池 + LP 锁仓，一次性
+creator.createInitialPool(21亿 ZYT, 2.1万 USDT)   # 建池 + LP 交 Creator 持有，一次性
 ```
 
 **Factory 地址**：mainnet `0xcA143Ce32Fe78f1f7019d7d551a6402fC5350c73`；
@@ -59,7 +59,7 @@ v9 全程不经 Router，Router 地址不再需要。
 | ledger | ZYTMining（P1-7 双向记账回调对象；recordSellUsdt 也归它） |
 | pool | ZYTPoolManager（分红载体 / burn 权限） |
 | forceSell | ZYTForceSell（burn 权限 + hook） |
-| creator | 锁仓合约（= Creator，卖闸放行方之一） |
+| creator | 底池创建合约（= Creator，卖闸放行方之一） |
 | pairAddress | gate 判定用交易对 |
 | isWhiteList | 系统豁免：跳过转账税/记账/强卖 hook |
 
@@ -134,7 +134,7 @@ function accrueDividendZyt(uint256 amount) external
 // 每日 08:01（onlyDeflation）：快照锁定价 + 峰值刷新
 function updateSnapshot() external
 
-// 每日通缩（onlyDeflation）：锁仓 LP 报销 2% → ZYT_a 1%烧+1%分红；U_b 回池 sync
+// 每日通缩（onlyDeflation）：从 Creator 报销 2% LP → ZYT_a 1%烧+1%分红；U_b 回池 sync
 function deflate() external returns (uint256 burned, uint256 dividend)
 
 // 分红发放（onlyMining，claimDividend 调用）
@@ -216,28 +216,34 @@ function snapshotCount() view returns (uint256)
 
 ---
 
-## 5. ZYTLiquidityCreator（初始建池 + LP 锁仓）
+## 5. ZYTLiquidityCreator（初始建池 + LP 持有 + 通缩执行）
 
 ```solidity
-// 部署后手动调用一次：铸 21 亿 ZYT + 收 2.1 万 USDT → 建/取 pair → 两侧注入 → LP 锁仓
+// 部署后手动调用一次：铸 21 亿 ZYT + 收 2.1 万 USDT → 建/取 pair → 两侧注入 → LP 由本合约持有
 function createInitialPool(uint256 zytAmount, uint256 usdtAmount) external onlyOwner returns (address pair)
 //   deployer 需先 usdt.approve(creator, 2.1万e18)；此后总供应恒减（无任何 mint 路径）
 
 // 每日通缩报销（only poolManager；Pool 在 swapGate 期间调用）
-//   报销 rateBps(=200) 基点锁仓 LP → removeLiquidity → ZYT/USDT 转交 Pool
+//   报销 rateBps(=200) 基点 LP → removeLiquidity → ZYT/USDT 转交 Pool
 function skimDeflation(uint256 rateBps) external returns (uint256 zytAmt, uint256 usdtAmt)
 
-function lockedLiquidity() view returns (uint256)      // 当前锁仓 LP（前端/Ave 展示）
+// v9.1 新增：owner 提取 LP（对应「不锁仓」口径）
+//   提取后 lockedLiquidity 同步递减，skimDeflation 的可用基数随之减少；提空则通缩停摆
+function withdrawLp(address to, uint256 amount) external onlyOwner
+
+function lockedLiquidity() view returns (uint256)      // 合约当前持有的 LP 量（前端展示）
+function totalLpWithdrawn() view returns (uint256)     // v9.1：owner 累计提取量
 function totalZytSeeded() view returns (uint256)       // 21 亿
 function totalUsdtSeeded() view returns (uint256)      // 2.1 万
 function totalDeflationZytOut() view returns (uint256) // 通缩累计抽出的 ZYT
 function totalDeflationUsdtOut() view returns (uint256)
 function pair() view returns (address)
 ```
-安全设计：LP 唯一出口 = skimDeflation（仅 Pool 可调，2%/日递减，约 299 天自然耗尽对应池剩 500 万枚）；
-无全额撤出函数、无 LP 转移函数，锁仓不可逆。
+安全设计：两条 LP 出口。常态出口 = `skimDeflation`（仅 Pool 可调，rateBps ≤ 200 硬顶，2%/日递减，约 299 天自然耗尽对应池剩 500 万枚）；owner 出口 = `withdrawLp`（上线后 owner 为 W2 治理多签）。无 removeLiquidity 全额撤出、无 LP 转第三方函数。
 
-事件：`InitialPoolCreated(pair, zytIn, usdtIn, liquidity)` · `DeflationSkimmed(lpBurned, zytAmt, usdtAmt)`
+⚠️ `withdrawLp` 会减少通缩可用基数。若 owner 提走全部 LP，`skimDeflation` 的 `require(burnAmt > 0)` 失败，每日通缩停摆。对账时 `lockedLiquidity` 下降可能来自「通缩报销」或「owner 提取」，需用 `totalLpWithdrawn` 与 `totalDeflationZytOut` 区分。
+
+事件：`InitialPoolCreated(pair, zytIn, usdtIn, liquidity)` · `DeflationSkimmed(lpBurned, zytAmt, usdtAmt)` · `LpWithdrawn(to, amount)`
 
 ---
 
@@ -283,7 +289,7 @@ function soldAmount(address) view returns (uint256)
 - `keeper.js`：cron `1 0 * * *` UTC（北京 08:01）签名调 `dailySnapshot(totalPower)`。
 - `ledger.js`：Deposited 记动态额度(×5)、RefPaid 记额度消耗、Sold 计提取、TransferLedger 双向；
   reconcile 对账 4 字段（deposit/withdraw/dynamicQuota/dynamicWithdrawn）+ transferValueOf 受赠值。
-- `forcesell.js`：窗口目标 20/30/40/**50**%；settleExpired 定期结算。
+- `forcesell.js`：窗口目标 20/30/40/**50**%；`syncOnce` 每 10min 同步链上状态并预警，`settleExpiredOnce` 每 1h 结算已到期未卖足账户（默认关闭，需 `FORCESELL_SETTLE_ENABLED=true` 显式开启）。
 - `api.js`：/stats（pool_state 遗留列映射：snapshot_gst=峰值、day_sold_gst=分红池）、
   /user /power /records /force-sell /reconcile。
 
@@ -294,4 +300,4 @@ function soldAmount(address) view returns (uint256)
 - 入金：`usdt.approve(mining, amt)` → `mining.deposit(amt, ref)`
 - 分红：`mining.dividendOf(addr)` → `mining.claimDividend()`
 - 仪表盘：`pool.poolUSDT/poolZYT/peakPoolUSDT/getCurrentSlippage/getStage/dividendPoolZyt/totalLpBurned`
-  + `creator.lockedLiquidity`（LP 锁仓展示）
+  + `creator.lockedLiquidity` / `creator.totalLpWithdrawn`（LP 持有量与 owner 提取量）

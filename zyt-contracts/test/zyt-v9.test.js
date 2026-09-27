@@ -338,6 +338,54 @@ describe("ZYT v9", function () {
     expect(await zyt.balanceOf(alice.address)).to.be.gt(aDivBefore);
   });
 
+  it("8b：withdrawLp 仅 owner 可调；提取后 lockedLiquidity 与实际余额同步", async function () {
+    // 非 owner 被拒
+    await expect(
+      creator.connect(alice).withdrawLp(alice.address, 1n)
+    ).to.be.revertedWithCustomError(creator, "OwnableUnauthorizedAccount");
+
+    // 参数边界
+    await expect(creator.withdrawLp(ethers.ZeroAddress, 1n)).to.be.revertedWith("Creator: zero addr");
+    await expect(creator.withdrawLp(alice.address, 0n)).to.be.revertedWith("Creator: zero amount");
+
+    const lpBal = await creator.lockedLiquidity();
+    await expect(creator.withdrawLp(alice.address, lpBal + 1n)).to.be.revertedWith("Creator: insufficient lp");
+
+    // 正常提取一半：LP 到账、lockedLiquidity 递减、累计量累加
+    const half = lpBal / 2n;
+    const lp = new ethers.Contract(
+      pair,
+      ["function balanceOf(address) view returns (uint256)"],
+      ethers.provider
+    );
+    const aLpBefore = await lp.balanceOf(alice.address);
+    await expect(creator.withdrawLp(alice.address, half))
+      .to.emit(creator, "LpWithdrawn")
+      .withArgs(alice.address, half);
+    expect(await lp.balanceOf(alice.address)).to.equal(aLpBefore + half);
+    expect(await creator.lockedLiquidity()).to.equal(lpBal - half);
+    expect(await creator.totalLpWithdrawn()).to.equal(half);
+    // 合约实际 LP 余额与记账一致
+    expect(await lp.balanceOf(await creator.getAddress())).to.equal(lpBal - half);
+  });
+
+  it("8c：提取后通缩可用基数随之减少（skimDeflation 按剩余 LP 计算）", async function () {
+    await depositOf(alice, U500, ethers.ZeroAddress);
+
+    const lpBal = await creator.lockedLiquidity();
+    const half = lpBal / 2n;
+    await creator.withdrawLp(alice.address, half); // 提到只剩一半
+
+    const remaining = await creator.lockedLiquidity();
+    expect(remaining).to.equal(lpBal - half);
+
+    const zBefore = await pool.poolZYT();
+    await deflation.connect(keeper).dailySnapshot(U500);
+    // 报销量 = 剩余 LP × 2%，池内 ZYT 减少
+    expect(await creator.lockedLiquidity()).to.equal(remaining - remaining * 200n / 10000n);
+    expect(await pool.poolZYT()).to.be.lt(zBefore);
+  });
+
   it("9. 强制卖出：首收币 15 天后未卖足 20% → keeper 结算销毁（窗口去重）", async function () {
     await config.setUint("poolStage1USDT", 21000n * E18);
     await config.setUint("poolStage2USDT", 10000000n * E18);
@@ -374,5 +422,25 @@ describe("ZYT v9", function () {
     const expected = reduction >= 400n ? 8000n : reduction >= 300n ? 4000n
       : reduction >= 200n ? 2000n : reduction >= 100n ? 1000n : 500n;
     expect(await pool.getCurrentSlippage()).to.equal(expected);
+  });
+
+  it("11. 算力补偿（v16）：后入金者按 1.01^天数 补偿，全网算力同步基准", async function () {
+    // D0：alice 首个入金 → launchDay = D0，算力基数 500
+    await depositOf(alice, U500, ethers.ZeroAddress);
+    expect(await mining.powerOf(alice.address)).to.equal(U500);
+    // 跳 5 天：alice 算力 = 500 × 1.01^5
+    await ethers.provider.send("evm_increaseTime", [5 * DAY]);
+    await ethers.provider.send("evm_mine");
+    const expected = U500 * 101n ** 5n / 100n ** 5n;
+    expect(await mining.powerOf(alice.address)).to.equal(expected);
+    // D5：bob 入金 → 入金即补偿到 500 × 1.01^5（与 alice 相同）
+    await depositOf(bob, U500, ethers.ZeroAddress);
+    expect(await mining.powerOf(bob.address)).to.equal(expected);
+    // 再跳 3 天：两人算力继续同步（各 = 500 × 1.01^8）
+    await ethers.provider.send("evm_increaseTime", [3 * DAY]);
+    await ethers.provider.send("evm_mine");
+    const expected8 = U500 * 101n ** 8n / 100n ** 5n / 100n ** 3n;
+    expect(await mining.powerOf(alice.address)).to.equal(expected8);
+    expect(await mining.powerOf(bob.address)).to.equal(expected8);
   });
 });

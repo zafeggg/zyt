@@ -56,6 +56,17 @@ export const CONFIG = {
     enabled: process.env.FORCESELL_ENABLED !== "false",
     syncIntervalMs: Number(process.env.FORCESELL_SYNC_MS || 600000), // 10min 同步一次
     alertCooldownMs: Number(process.env.FORCESELL_ALERT_COOLDOWN_MS || 3600000), // 每用户预警冷却 1h
+
+    // ===== 到期结算（补需求「未执行后果：自动销毁」的调度方）=====
+    // 动作内容：遍历已到期且未卖足的用户，逐个调用 ZYTForceSell.settleExpired(addr)，
+    //          由合约销毁差额（不可逆）。合约侧有 settledWindows 位图保证同一窗口只结算一次，
+    //          此处再加一层本地预判以省 gas。
+    // ⚠️ 默认关闭。开启前请确认：keeper 钱包有 BNB、账本 reconcile 无差异、合约 keeper 地址为本钱包。
+    //    设 FORCESELL_SETTLE_ENABLED=true 才生效。
+    settleEnabled: process.env.FORCESELL_SETTLE_ENABLED === "true",
+    settleIntervalMs: Number(process.env.FORCESELL_SETTLE_MS || 3600000), // 结算轮询间隔 1h
+    settleMaxPerRun: Number(process.env.FORCESELL_SETTLE_MAX_PER_RUN || 10), // 单轮最多结算笔数（控 gas）
+    settleTxGapMs: Number(process.env.FORCESELL_SETTLE_TX_GAP_MS || 3000), // 单笔间隔，防 nonce 冲突与 RPC 限流
   },
   api: {
     port: Number(process.env.API_PORT || 8080),

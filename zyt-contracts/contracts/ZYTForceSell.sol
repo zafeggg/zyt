@@ -11,6 +11,8 @@ import "@openzeppelin/contracts/access/Ownable.sol";
  *         到期未卖足 → 差额自动销毁。转账视同卖出，接收方同样启动。
  *         被 ZYTToken 的 _update hook 调用；V8 新增 settleExpired 供 Keeper 定期结算到期义务。
  *         P1-13：settleExpired 以窗口位图去重，同一窗口只结算一次，防 Keeper 重复调用导致递归销毁。
+ *         P1-14：checkAndBurn 对跨入未结算窗口的第一笔转账先行结算欠账（堵「拖到期末一笔
+ *                转账免费免责」，与 keeper 共用位图）。
  */
 contract ZYTForceSell is Ownable {
     uint256 public constant WINDOW = 15 days;
@@ -54,6 +56,13 @@ contract ZYTForceSell is Ownable {
     }
 
     /// @notice 由 ZYTToken 调用：记录转账并返回需销毁量
+    /// @dev P1-14（AUDIT-5）：过期未结算窗口的欠账在转账路径上先行结算。
+    ///      修前 soldAmount += amount 先于欠账判定，本次转账自身即充当卖出进度，
+    ///      用户可把全部义务拖到最后一期用一笔转账免费完成（实测窗口 4 转 50% 零销毁免责）。
+    ///      修后：当前窗口若尚未被结算（keeper 的 settleExpired 或本函数），先按
+    ///      「转账前」的 soldAmount 判定欠账并烧毁（上限为本次转账量），再照常累加
+    ///      本次卖出进度。与 settleExpired 共用 settledWindows 位图（P1-13），
+    ///      谁先结算谁置位，互不重复；每期足额卖出的正常用户不受任何影响。
     function checkAndBurn(address from, address to, uint256 amount) external returns (uint256) {
         require(msg.sender == token, "ZYTForceSell: only token");
         uint256 burned = 0;
@@ -70,26 +79,30 @@ contract ZYTForceSell is Ownable {
             emit FirstReceive(from, block.timestamp);
         }
 
-        // 转账视同卖出：from 累计卖出量增加
-        soldAmount[from] += amount;
-
-        // 检查 from 各到期窗口是否卖足，不足部分销毁（以本次转账为限）
+        // P1-14：跨入未结算窗口的第一笔转账 → 先结算此前各期累计欠账。
+        // 判定基准用「转账前」的 soldAmount（不把本次算进去），堵死「拖到期末一笔转账免费免责」。
         uint256 elapsed = block.timestamp - firstReceiveTime[from];
         if (elapsed >= WINDOW) {
-            uint256 targetBps = _targetBps(elapsed);
-            // P1-9 修复：required 以「转账前余额（持币总量）」为基数。
-            // 本函数由 ZYTToken._update 在 super._update 之后调用，此时 from 的余额已扣减 amount，
-            // 直接读余额会让应卖门槛随转账同步缩小（转出越多门槛越低），与「持币总量 20%」的口径不符。
-            uint256 bal = IERC20View(token).balanceOf(from) + amount;
-            uint256 required = bal * targetBps / 10000;
-            if (soldAmount[from] < required) {
-                uint256 deficit = required - soldAmount[from];
-                burned = amount < deficit ? amount : deficit;
-                // V9 修复：销毁后不扣减 soldAmount（销毁是惩罚，不应侵蚀用户已卖进度；
-                // 余额下降使 required 按新余额收敛）
-                emit ForceSellBurned(from, burned, _currentWindow(elapsed));
+            uint256 win = _currentWindow(elapsed);
+            uint256 bit = 1 << (win - 1);
+            if ((settledWindows[from] & bit) == 0) {
+                settledWindows[from] |= bit;
+                uint256 targetBps = _targetBps(elapsed);
+                // P1-9 口径：以「转账前余额（持币总量）」为基数（本函数在 super._update 之后调用）
+                uint256 bal = IERC20View(token).balanceOf(from) + amount;
+                uint256 required = bal * targetBps / 10000;
+                if (soldAmount[from] < required) {
+                    uint256 deficit = required - soldAmount[from];
+                    burned = amount < deficit ? amount : deficit;
+                    emit ForceSellBurned(from, burned, win);
+                }
+                emit WindowSettled(from, win);
             }
         }
+
+        // 转账视同卖出：本次量照常计入累计进度（供后续窗口判定使用）
+        soldAmount[from] += amount;
+
         return burned;
     }
 

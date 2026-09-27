@@ -45,11 +45,12 @@ export const FORCESELL_IFACE = new Interface([
   "event WindowSettled(address indexed user, uint256 window)",
 ]);
 
-/** Creator 事件（v9：初始建池 + LP 锁仓 + 通缩报销） */
+/** Creator 事件（v9：初始建池 + LP 持有 + 通缩报销；v9.1 增 owner 提取） */
 export const CREATOR_IFACE = new Interface([
   "event InitialPoolCreated(address indexed pair, uint256 zytIn, uint256 usdtIn, uint256 liquidity)",
   "event PoolManagerChanged(address indexed poolManager)",
   "event DeflationSkimmed(uint256 lpBurned, uint256 zytAmt, uint256 usdtAmt)",
+  "event LpWithdrawn(address indexed to, uint256 amount)",
 ]);
 
 /** Referral 事件（2026-09-24 补订阅：绑定关系入 events 供记录页展示） */
@@ -84,13 +85,14 @@ export const POOL_VIEW_ABI = [
   "function swapGate() view returns (bool)",
 ];
 
-/** Creator 只读视图 ABI（v9：LP 锁仓量 + 通缩报销累计） */
+/** Creator 只读视图 ABI（v9：LP 持有量 + 通缩报销累计；v9.1 增 owner 提取累计） */
 export const CREATOR_VIEW_ABI = [
   "function lockedLiquidity() view returns (uint256)",
   "function totalZytSeeded() view returns (uint256)",
   "function totalUsdtSeeded() view returns (uint256)",
   "function totalDeflationZytOut() view returns (uint256)",
   "function totalDeflationUsdtOut() view returns (uint256)",
+  "function totalLpWithdrawn() view returns (uint256)",
   "function pair() view returns (address)",
   "function initialized() view returns (bool)",
 ];

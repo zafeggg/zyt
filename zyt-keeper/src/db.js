@@ -70,6 +70,7 @@ function migrateMemory(d) {
     amount TEXT,
     extra TEXT,
     created_at INTEGER,
+    block_time INTEGER,
     UNIQUE(chain_id, tx_hash, log_index)
   );
   CREATE TABLE IF NOT EXISTS users (
@@ -168,6 +169,7 @@ async function createMysqlDb(url) {
       amount TEXT,
       extra TEXT,
       created_at BIGINT,
+      block_time BIGINT DEFAULT NULL,
       UNIQUE KEY uk_evt (chain_id, tx_hash, log_index)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
     `CREATE TABLE IF NOT EXISTS users (
@@ -245,6 +247,8 @@ async function createMysqlDb(url) {
     "ALTER TABLE users ADD COLUMN exit_day INT DEFAULT 0",
     "ALTER TABLE pool_state ADD COLUMN day_sold_gst VARCHAR(80) DEFAULT '0'",
     "ALTER TABLE pool_state ADD COLUMN snapshot_pool_usdt VARCHAR(80) DEFAULT '0'",
+    // 2026-09-26：events 补区块时间戳列（power_day / exit_day 与合约 block.timestamp/86400 同口径）
+    "ALTER TABLE events ADD COLUMN block_time BIGINT DEFAULT NULL",
   ];
   for (const sql of MIGRATIONS) {
     try {

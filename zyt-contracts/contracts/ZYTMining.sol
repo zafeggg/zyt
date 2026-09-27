@@ -31,8 +31,8 @@ contract ZYTMining is ReentrancyGuard {
     struct UserState {
         uint256 depositTotal;       // 累计入金 USDT
         uint256 withdrawTotal;      // 累计提取 USDT（静态 2 倍判断）
-        uint256 powerBase;          // 算力基数
-        uint256 powerDay;           // 入金日（复利起始）
+        uint256 powerBase;          // 算力基数（累计，不随时间变化）
+        uint256 powerDay;           // v16：首次入金日（分红起算下限；复利基准已改为全网 launchDay）
         uint256 pendingDividend;    // 待提取分红（ZYT）
         bool isExited;              // 静态出局标记（复投时重置）
         uint256 receivedValue;      // 累计受赠 USDT 等值（转账接收折算）
@@ -54,6 +54,7 @@ contract ZYTMining is ReentrancyGuard {
     mapping(uint256 => DailyInfo) public dailyInfo;
     mapping(address => uint256) public dividendClaimedDay; // 按日结算游标
     uint256 public constant MAX_SETTLE_DAYS = 365;
+    uint64 public launchDay;                    // v16：全网算力复利基准日（首次入金日，0=未启动）
 
     event Deposited(address indexed user, uint256 usdt, uint256 power, uint256 quota, address ref);
     event Bought(address indexed user, uint256 usdtIn, uint256 zytOut);
@@ -122,18 +123,15 @@ contract ZYTMining is ReentrancyGuard {
         u.isExited = false;
         u.dynamicExited = false;
         u.depositTotal += usdtAmount;
+        // v16 算力补偿：launchDay = 全网首次入金日；个人算力统一按 launchDay 基准复利，
+        // 后入金者入金即按 1.01^(today-launchDay) 补偿（先入有先机，后入有算力补偿）
+        if (launchDay == 0) launchDay = uint64(today);
+        if (u.powerDay == 0) u.powerDay = today; // 分红起算日（仅首次入金写入）
         uint256 power = usdtAmount * config.powerRate() / 10000;
-        if (u.powerBase > 0) {
-            uint256 refDay = (u.exitDay > 0 && u.exitDay < today) ? u.exitDay : today;
-            u.powerBase = ZYTCompute.powerWithCompound(
-                u.powerBase,
-                config.dailyCompoundRate(),
-                refDay > u.powerDay ? refDay - u.powerDay : 0
-            );
-        }
+        // v16：powerBase 只存算力基数累计，复利统一在 _powerOf 按 launchDay 计算，
+        // 不再逐用户固化（原 P1-12 复投重置逻辑随统一基准自然取消）
         u.exitDay = 0;
         u.powerBase += power;
-        u.powerDay = today;
         u.buyQuota += usdtAmount * config.buyQuotaRate() / 10000;
         u.dynamicQuota += usdtAmount * config.dynamicQuotaMul();
 
@@ -220,12 +218,19 @@ contract ZYTMining is ReentrancyGuard {
     }
 
     /// @notice 提取分红（三阶段均可；ZYT 从 Pool 分红池转出）
+    /// @dev AUDIT-2：零额调用也成功（仅推进游标）。修前 amount == 0 时 revert，
+    ///      游标推进被回滚——用户超 365 天无交互后 deposit(strict) 与 claim(零额)
+    ///      双向关闭，入金永久阻塞。修后调一次 claim 即可把游标推进一段，
+    ///      deposit 的 strict 检查恢复可达。
     function claimDividend() external nonReentrant returns (uint256 amount) {
         uint256 today = block.timestamp / 86400;
         _settleDividend(msg.sender, today, false);
         UserState storage u = users[msg.sender];
         amount = u.pendingDividend;
-        require(amount > 0, "Mining: nothing to claim");
+        if (amount == 0) {
+            emit Claimed(msg.sender, 0);   // 游标已推进，无待领分红
+            return 0;
+        }
         u.pendingDividend = 0;
         pool.payoutDividend(msg.sender, amount);
         emit Claimed(msg.sender, amount);
@@ -286,7 +291,9 @@ contract ZYTMining is ReentrancyGuard {
         UserState storage u = users[user];
         if (u.powerBase == 0) return 0;
         if (u.exitDay > 0 && day >= u.exitDay) return 0;
-        uint256 daysElapsed = day > u.powerDay ? day - u.powerDay : 0;
+        // v16：全网统一复利基准 launchDay（首次入金日），个人 powerDay 仅作分红起算
+        if (launchDay == 0 || day < uint256(launchDay)) return 0;
+        uint256 daysElapsed = day - uint256(launchDay);
         return ZYTCompute.powerWithCompound(u.powerBase, config.dailyCompoundRate(), daysElapsed);
     }
 
