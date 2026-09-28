@@ -28,6 +28,7 @@ const provider = new JsonRpcProvider(process.env.RPC_URL, CHAIN_ID, { staticNetw
 const mining = new Contract(process.env.MINING_ADDR, [
   "function powerOf(address) view returns (uint256)",
   "function dailyInfo(uint256) view returns (uint256 totalPower, uint256 dividendAmount)",
+  "function launchDay() view returns (uint64)", // 2026-09-28：v16 复利基准，ledger._getLaunchDay 链上权威路径
 ], provider);
 const TOPIC = id("Deposited(address,uint256,uint256,uint256,address)");
 const iface = new Interface(["event Deposited(address indexed user, uint256 usdt, uint256 power, uint256 quota, address ref)"]);

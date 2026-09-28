@@ -25,6 +25,8 @@ export class Ledger {
     this.exitMul = BigInt(CONFIG.params?.staticExitMul || 2);
     /** 动态额度倍数（v9 加速释放；reconcile 校准） */
     this.dynamicQuotaMul = BigInt(CONFIG.params?.dynamicQuotaMul || 5);
+    /** v16：全网算力复利基准日 launchDay（=全网首次入金日；链上读取缓存，null=未加载） */
+    this.launchDay = null;
   }
 
   /** 增量重放事件，重建用户账本 */
@@ -68,12 +70,11 @@ export class Ledger {
           u.dynamic_quota += usdt * this.dynamicQuotaMul;
           u.is_exited = 0;
           u.exit_day = 0;
-          // P1-12：与合约同口径，先固化此前累积的复利再重置起点
-          if (u.power_base > 0n) {
-            u.power_base = this._compound(u.power_base, Math.max(day - u.power_day, 0));
-          }
+          // v16 对齐（2026-09-28）：power_base 只存原始算力累计，复利统一按全网 launchDay
+          // 基准在 powerOf/totalPower 内计算（合约 ZYTMining.sol:131-134 已取消 P1-12
+          // 逐人固化重置）；power_day 仅作分红起算日，仅首次入金写入（与合约 :129 同口径）
           u.power_base += power;
-          u.power_day = day;
+          if (!u.power_day) u.power_day = day;
           this._applyExit(u, day);
         });
       } else if (r.name === "RefPaid") {
@@ -229,7 +230,32 @@ export class Ledger {
     return p;
   }
 
-  /** 算力复利：base × 1.01^days */
+  /**
+   * 全网算力复利基准日 launchDay（v16，合约 ZYTMining.sol:57 public uint64 = 全网首次入金日）。
+   * 链上权威值优先（读一次缓存）；读失败回退账本最小 power_day（口径等价：
+   * launchDay 即首个入金用户的 power_day）。
+   */
+  async _getLaunchDay() {
+    if (this.launchDay !== null) return this.launchDay;
+    try {
+      const mining = this.contracts && this.contracts.mining;
+      if (mining && mining.launchDay) {
+        const d = Number(await mining.launchDay());
+        if (d > 0) {
+          this.launchDay = d;
+          return d;
+        }
+      }
+    } catch {
+      /* 链上读取失败 → 回退账本推导 */
+    }
+    const db = await getDb();
+    const r = await db.get("SELECT MIN(power_day) m FROM users WHERE power_day > 0");
+    this.launchDay = r && r.m ? Number(r.m) : 0;
+    return this.launchDay;
+  }
+
+  /** 算力复利：base × 1.01^(day-launchDay)，全网统一基准（v16 对齐，2026-09-28） */
   async powerOf(addr, nowDay = Math.floor(Date.now() / 86400000)) {
     const db = await getDb();
     const row = await db.get("SELECT power_base, power_day, exit_day FROM users WHERE address=?", [addr]);
@@ -237,30 +263,38 @@ export class Ledger {
     // 与合约 _powerOf 同口径：出局后算力停发（历史算力仍可回算，分红按日结算依赖）
     const exitDay = Number(row.exit_day || 0);
     if (exitDay > 0 && nowDay >= exitDay) return 0n;
-    return this._compound(BigInt(row.power_base), nowDay - row.power_day);
+    // 与合约 _powerOf 同口径（ZYTMining.sol:290-298）：全网统一 launchDay 复利基准，
+    // 后入金者入金即按 1.01^(day-launchDay) 补偿；launchDay 未启动时全网算力为 0
+    const launchDay = await this._getLaunchDay();
+    if (!launchDay || nowDay < launchDay) return 0n;
+    return this._compound(BigInt(row.power_base), nowDay - launchDay);
   }
 
   /**
    * 全网算力（Σ 复利后）。单次查询后内存计算，避免逐用户 DB 往返。
    * @param {number} [day] 指定 UTC 天数，缺省用当前天。
    *   快照调用必须传「合约本次将要写入的 day」，以保证 dailyInfo[day].totalPower
-   *   与合约侧 Σ _powerOf(user, day) 严格一致（分红公式的分母口径，2026-09-26 对齐）。
+   *   与合约侧 Σ _powerOf(user, day) 严格一致（分红公式的分母口径，2026-09-26 对齐；
+   *   2026-09-28 随合约 v16 升级为全网 launchDay 统一复利基准）。
    */
   async totalPower(day) {
     const db = await getDb();
     const rows = await db.all("SELECT power_base, power_day, exit_day FROM users");
     const at = day === undefined || day === null ? Math.floor(Date.now() / 86400000) : Number(day);
+    // v16 对齐：全网统一 launchDay 复利基准（合约 ZYTMining.sol:294-297）；启动日之前全网算力为 0
+    const launchDay = await this._getLaunchDay();
+    if (!launchDay || at < launchDay) return 0n;
     let sum = 0n;
     for (const r of rows) {
       const base = BigInt(r.power_base || 0);
       if (base === 0n) continue;
       const pd = Number(r.power_day || 0);
-      // 该用户当日尚未入金 → 不计入当日全网算力（与合约 _settleDividend 的 from >= powerDay 一致）
+      // 该用户当日尚未首入 → 不计入当日分红分母（与合约 _settleDividend 的 from >= powerDay 一致）
       if (at < pd) continue;
       // 与合约 _powerOf(user, day) 同口径：出局当日起算力归零（历史分红按日回算不受影响）
       const exitDay = Number(r.exit_day || 0);
       if (exitDay > 0 && at >= exitDay) continue;
-      sum += this._compound(base, at - pd);
+      sum += this._compound(base, at - launchDay);
     }
     return sum;
   }

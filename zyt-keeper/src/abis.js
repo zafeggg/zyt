@@ -111,4 +111,6 @@ export const MINING_USERINFO_ABI = [
   "function dividendOf(address) view returns (uint256,uint256)",
   // 2026-09-26：全网算力统计用（链上权威值，含日复利；勿用 DB 账本口径，事件缺失时恒为 0）
   "function powerOf(address) view returns (uint256)",
+  // 2026-09-28：v16 全网算力复利基准日（ledger 对齐合约 _powerOf 用）
+  "function launchDay() view returns (uint64)",
 ];
