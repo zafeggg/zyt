@@ -672,4 +672,55 @@ describe("ZYT v9", function () {
     expect(await mining.launchDay()).to.equal(oldDay - 3n);
     await expect(mining.setLaunchDay(0n)).to.be.revertedWith("Mining: zero day");
   });
+
+  it("15. v9.2 档位临界：累计卖出达入金 60% 后下一窗口降为 2%", async function () {
+    await gotoWindow();
+    await config.setUint("poolStage1USDT", 21000n * E18);
+    await config.setUint("poolStage2USDT", 10_000_000n * E18);
+    await depositOf(bob, U500, ethers.ZeroAddress);
+    await usdt.connect(bob).faucet(U500);
+    await usdt.connect(bob).approve(await mining.getAddress(), U500);
+    await mining.connect(bob).buy(U500);
+    expect(await forceSell.tierBpsOf(bob.address)).to.equal(2000n); // 首期 20%
+
+    // 用转账（视同卖出，不受窗口额度阻断）把 withdrawTotal 推过 60% × 500U = 300U，
+    // 同时刻意停在 2 倍出局线（1000U）之下：否则会触发静态出局禁卖，测不到 2% 档
+    await usdt.transfer(pair, SEED_USDT * 4n); // 抬价，使转账折算额足够大
+    await (await ethers.getContractAt("MiniPair", pair)).sync();
+    const bal = await zyt.balanceOf(bob.address);
+    await zyt.connect(bob).transfer(carol.address, bal * 30n / 100n);
+    const info = await mining.userInfo(bob.address);
+    expect(info.withdrawTotal).to.be.gte(info.depositTotal * 6000n / 10000n); // ≥ 60%
+    expect(info.staticExited).to.equal(false); // 未触 2 倍线，仍可卖
+
+    // 首个窗口由此结束（转账已置位首期）→ 下一窗口档位降为 2%
+    await gotoWindow();
+    expect(await forceSell.tierBpsOf(bob.address)).to.equal(200n);
+    const bal2 = await zyt.balanceOf(bob.address);
+    await zyt.connect(bob).approve(await pool.getAddress(), bal2);
+    await expect(mining.connect(bob).sellZyt(bal2 * 200n / 10000n + 1n))
+      .to.be.revertedWith("FS: over quota");
+    await mining.connect(bob).sellZyt(bal2 * 200n / 10000n);
+  });
+
+  it("16. v9.2 双轨禁卖：动态出局同样禁止卖出（复投解除）", async function () {
+    await config.setUint("dynamicQuotaMul", 1n);
+    await config.setUint("refLevel1Rate", 3000n);
+    await depositOf(alice, U500, root.address); // alice 动态额度 500U
+    const wallets = (await ethers.getSigners()).slice(5, 10);
+    for (let i = 0; i < wallets.length; i++) {
+      await depositOf(wallets[i], U500, alice.address); // 每笔消耗 150U 额度
+      if ((await mining.userInfo(alice.address)).dynamicExited) break;
+    }
+    expect((await mining.userInfo(alice.address)).dynamicExited).to.equal(true);
+
+    await gotoWindow();
+    // 动态出局 → 禁卖（守卫先于窗口/额度校验，故窗口日亦恒定 revert）
+    await expect(mining.connect(alice).sellZyt(1n * E18)).to.be.revertedWith("Mining: dynamic exited");
+
+    // 复投开新一轮 → 解除
+    await depositOf(alice, U500, root.address);
+    expect((await mining.userInfo(alice.address)).dynamicExited).to.equal(false);
+    await expect(mining.connect(alice).sellZyt(1n * E18)).to.not.be.revertedWith("Mining: dynamic exited");
+  });
 });
