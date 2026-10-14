@@ -32,7 +32,7 @@ contract ZYTMining is ReentrancyGuard {
         uint256 depositTotal;       // 累计入金 USDT
         uint256 withdrawTotal;      // 累计提取 USDT（静态 2 倍判断）
         uint256 powerBase;          // 算力基数（累计，不随时间变化）
-        uint256 powerDay;           // v16：首次入金日（分红起算下限；复利基准已改为全网 launchDay）
+        uint256 powerDay;           // v16.1：首次入金次日（分红起算下限；当日入金不领当日池，分母分子口径一致）
         uint256 pendingDividend;    // 待提取分红（ZYT）
         bool isExited;              // 静态出局标记（复投时重置）
         uint256 receivedValue;      // 累计受赠 USDT 等值（转账接收折算）
@@ -126,7 +126,12 @@ contract ZYTMining is ReentrancyGuard {
         // v16 算力补偿：launchDay = 全网首次入金日；个人算力统一按 launchDay 基准复利，
         // 后入金者入金即按 1.01^(today-launchDay) 补偿（先入有先机，后入有算力补偿）
         if (launchDay == 0) launchDay = uint64(today);
-        if (u.powerDay == 0) u.powerDay = today; // 分红起算日（仅首次入金写入）
+        // v16.1 分红起算（2026-10-09）：powerDay = 首次入金次日。
+        // 原因：每日快照在 UTC 00:01 定格当日分红池与分母 totalPower（快照时刻账本不含当日入金者），
+        // 若 powerDay = 入金当天，结算循环 d=powerDay 会用「快照后才入金的算力」去分「快照前定格的池」，
+        // 分子在场、分母不在场 → 新用户白拿当日池、稀释老用户（可被「每天 00:01 后入金」套利）。
+        // 改为次日：D 日入金 → 从 D+1 池起算，D+1 快照时用户必已在账本，分子分母严格一致。
+        if (u.powerDay == 0) u.powerDay = today + 1; // 分红起算日（仅首次入金写入；入金次日生效）
         uint256 power = usdtAmount * config.powerRate() / 10000;
         // v16：powerBase 只存算力基数累计，复利统一在 _powerOf 按 launchDay 计算，
         // 不再逐用户固化（原 P1-12 复投重置逻辑随统一基准自然取消）

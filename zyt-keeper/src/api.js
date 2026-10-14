@@ -337,7 +337,7 @@ export function startApi() {
           const claimable = BigInt(dv[0]);
           let cursor = Number(dv[1]);
           const powerDay = row ? Number(row.power_day || 0) : 0;
-          if (cursor === 0) cursor = powerDay; // 与合约一致：未初始化游标时从入金日起算
+          if (cursor === 0) cursor = powerDay; // 与合约一致：未初始化游标时从入金次日起算（v16.1 powerDay=入金日+1）
           if (cursor < powerDay) cursor = powerDay;
           // 算力口径：用链上 userInfo.power（当日现值，权威）反向复利推历史日，
           // 避免链下账本用「入库时间」近似 power_day 造成 1% 量级偏差

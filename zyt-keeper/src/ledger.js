@@ -72,9 +72,11 @@ export class Ledger {
           u.exit_day = 0;
           // v16 对齐（2026-09-28）：power_base 只存原始算力累计，复利统一按全网 launchDay
           // 基准在 powerOf/totalPower 内计算（合约 ZYTMining.sol:131-134 已取消 P1-12
-          // 逐人固化重置）；power_day 仅作分红起算日，仅首次入金写入（与合约 :129 同口径）
+          // 逐人固化重置）；power_day 仅作分红起算日，仅首次入金写入。
+          // v16.1（2026-10-09）：power_day = 入金次日（与合约 :129 powerDay=today+1 同口径），
+          // 当日入金不领当日池：快照 00:01 定格的分母不含当日入金者，结算起算推到次日即一致。
           u.power_base += power;
-          if (!u.power_day) u.power_day = day;
+          if (!u.power_day) u.power_day = day + 1;
           this._applyExit(u, day);
         });
       } else if (r.name === "RefPaid") {
@@ -232,8 +234,8 @@ export class Ledger {
 
   /**
    * 全网算力复利基准日 launchDay（v16，合约 ZYTMining.sol:57 public uint64 = 全网首次入金日）。
-   * 链上权威值优先（读一次缓存）；读失败回退账本最小 power_day（口径等价：
-   * launchDay 即首个入金用户的 power_day）。
+   * 链上权威值优先（读一次缓存）；读失败回退账本推导：launchDay = MIN(power_day) - 1。
+   * v16.1（2026-10-09）power_day 已改为入金次日，首个入金日 = power_day - 1。
    */
   async _getLaunchDay() {
     if (this.launchDay !== null) return this.launchDay;
@@ -251,7 +253,7 @@ export class Ledger {
     }
     const db = await getDb();
     const r = await db.get("SELECT MIN(power_day) m FROM users WHERE power_day > 0");
-    this.launchDay = r && r.m ? Number(r.m) : 0;
+    this.launchDay = r && r.m ? Number(r.m) - 1 : 0; // power_day=入金次日 → 入金日=power_day-1
     return this.launchDay;
   }
 
@@ -289,7 +291,8 @@ export class Ledger {
       const base = BigInt(r.power_base || 0);
       if (base === 0n) continue;
       const pd = Number(r.power_day || 0);
-      // 该用户当日尚未首入 → 不计入当日分红分母（与合约 _settleDividend 的 from >= powerDay 一致）
+      // 该用户当日尚未首入 → 不计入当日分红分母（与合约 _settleDividend 的 from >= powerDay 一致；
+      // v16.1 起 power_day=入金次日，天然保证「起算日快照时用户已在账本」）
       if (at < pd) continue;
       // 与合约 _powerOf(user, day) 同口径：出局当日起算力归零（历史分红按日回算不受影响）
       const exitDay = Number(r.exit_day || 0);

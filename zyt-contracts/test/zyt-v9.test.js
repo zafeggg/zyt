@@ -333,6 +333,10 @@ describe("ZYT v9", function () {
     await ethers.provider.send("evm_increaseTime", [DAY]);
     await ethers.provider.send("evm_mine");
     await deflation.connect(keeper).dailySnapshot(U500); // 次日快照（登记 T+1 日分红）
+    // v16.1：powerDay = 入金次日（当日入金不领当日池）。alice 入金日 D → 从 D+1 池起算，
+    // D+1 当天结算区间为空（from >= toDay），到 D+2 才能领到 D+1 池份额
+    await ethers.provider.send("evm_increaseTime", [DAY]);
+    await ethers.provider.send("evm_mine");
     const aDivBefore = await zyt.balanceOf(alice.address);
     await mining.connect(alice).claimDividend();
     expect(await zyt.balanceOf(alice.address)).to.be.gt(aDivBefore);
@@ -384,6 +388,31 @@ describe("ZYT v9", function () {
     // 报销量 = 剩余 LP × 2%，池内 ZYT 减少
     expect(await creator.lockedLiquidity()).to.equal(remaining - remaining * 200n / 10000n);
     expect(await pool.poolZYT()).to.be.lt(zBefore);
+  });
+
+  it("8d：当日入金不领当日池（v16.1 powerDay=入金次日，堵白嫖套利）", async function () {
+    // D 日：alice 快照前入金，快照定格 D 日分红池（分母仅含 alice）
+    await depositOf(alice, U500, ethers.ZeroAddress);
+    await deflation.connect(keeper).dailySnapshot(U500);
+    const dayD = BigInt(Math.floor(Number(await ts()) / DAY));
+    expect((await mining.dailyInfo(dayD))[1]).to.be.gt(0n);
+
+    // D 日快照之后 bob 才入金：powerDay = D+1，D 日池子没他的份（修复前：白拿当日池）
+    await depositOf(bob, U500, ethers.ZeroAddress);
+
+    // D+1：bob claim → 结算区间为空（from=D+1 >= toDay=D+1），当日池不白拿
+    await ethers.provider.send("evm_increaseTime", [DAY]);
+    await ethers.provider.send("evm_mine");
+    await deflation.connect(keeper).dailySnapshot(U500); // D+1 快照（登记 D+1 分红）
+    const bBefore = await zyt.balanceOf(bob.address);
+    await mining.connect(bob).claimDividend();
+    expect(await zyt.balanceOf(bob.address)).to.equal(bBefore); // 一分不领
+
+    // D+2：bob 领到 D+1 池份额（次日池正常参与，D+1 快照时 bob 已在账本 → 分母含他）
+    await ethers.provider.send("evm_increaseTime", [DAY]);
+    await ethers.provider.send("evm_mine");
+    await mining.connect(bob).claimDividend();
+    expect(await zyt.balanceOf(bob.address)).to.be.gt(bBefore);
   });
 
   it("9. 强制卖出：首收币 15 天后未卖足 20% → keeper 结算销毁（窗口去重）", async function () {
