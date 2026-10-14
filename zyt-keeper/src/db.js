@@ -136,7 +136,14 @@ function migrateMemory(d) {
     sell_count INTEGER DEFAULT 0,
     total_sell TEXT DEFAULT '0',
     at_risk INTEGER DEFAULT 0,
-    updated_at INTEGER
+    updated_at INTEGER,
+    -- v9.2 卖币窗口（14/28 日历窗）字段；current_window/required_sell 为旧 4×15 天模型遗留，不再写入
+    -- target_bps 复用为「当期档位（bps）」：2000 首期 / 1000 常规 / 200 达入金 60% 后
+    window_id BIGINT DEFAULT 0,
+    phase TEXT DEFAULT '',
+    quota TEXT DEFAULT '0',
+    deficit TEXT DEFAULT '0',
+    deadline_sec BIGINT DEFAULT 0
   );
   `);
 }
@@ -235,7 +242,12 @@ async function createMysqlDb(url) {
       sell_count INT DEFAULT 0,
       total_sell VARCHAR(80) DEFAULT '0',
       at_risk TINYINT(1) DEFAULT 0,
-      updated_at BIGINT
+      updated_at BIGINT,
+      window_id BIGINT DEFAULT 0,
+      phase VARCHAR(16) DEFAULT '',
+      quota VARCHAR(80) DEFAULT '0',
+      deficit VARCHAR(80) DEFAULT '0',
+      deadline_sec BIGINT DEFAULT 0
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
   ];
   for (const sql of DDL) await pool.query(sql);
@@ -249,6 +261,12 @@ async function createMysqlDb(url) {
     "ALTER TABLE pool_state ADD COLUMN snapshot_pool_usdt VARCHAR(80) DEFAULT '0'",
     // 2026-09-26：events 补区块时间戳列（power_day / exit_day 与合约 block.timestamp/86400 同口径）
     "ALTER TABLE events ADD COLUMN block_time BIGINT DEFAULT NULL",
+    // 2026-10-14（v9.2）：force_sell 由「4×15 天窗口」改为「14/28 日历窗」，补窗口字段
+    "ALTER TABLE force_sell ADD COLUMN window_id BIGINT DEFAULT 0",
+    "ALTER TABLE force_sell ADD COLUMN phase VARCHAR(16) DEFAULT ''",
+    "ALTER TABLE force_sell ADD COLUMN quota VARCHAR(80) DEFAULT '0'",
+    "ALTER TABLE force_sell ADD COLUMN deficit VARCHAR(80) DEFAULT '0'",
+    "ALTER TABLE force_sell ADD COLUMN deadline_sec BIGINT DEFAULT 0",
   ];
   for (const sql of MIGRATIONS) {
     try {

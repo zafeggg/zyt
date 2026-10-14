@@ -38,11 +38,15 @@ export const DEFLATION_IFACE = new Interface([
   "event DeflationFloorHit(uint256 day)",
 ]);
 
-/** ForceSell 事件（沿用 v8） */
+/** ForceSell 事件（v9.2：14/28 日历窗；FirstReceive / ForceSellBurned / WindowSettled 签名沿用） */
 export const FORCESELL_IFACE = new Interface([
   "event FirstReceive(address indexed user, uint256 time)",
   "event ForceSellBurned(address indexed user, uint256 amount, uint256 window)",
   "event WindowSettled(address indexed user, uint256 window)",
+  // v9.2 新增：窗口开启（额度锁存）、窗口内卖出、窗口复位（复投 / 迁移）
+  "event WindowOpened(address indexed user, uint256 window, uint256 quota, uint256 tierBps)",
+  "event WindowSold(address indexed user, uint256 window, uint256 amount, uint256 sold)",
+  "event WindowReset(address indexed user)",
 ]);
 
 /** Creator 事件（v9：初始建池 + LP 持有 + 通缩报销；v9.1 增 owner 提取） */

@@ -383,33 +383,39 @@ export function startApi() {
           res.end(JSON.stringify({ address: addr, status: "no-data" }));
           return;
         }
-        // 实时重算窗口状态（基于表内快照数据 + 当前时间）
-        const cs = computeForceSell(
-          BigInt(row.balance || "0"),
-          BigInt(row.sold_amount || "0"),
-          Number(row.first_receive_at || 0),
-          Math.floor(Date.now() / 1000)
-        );
+        // 实时重算窗口状态（表内为链上权威快照值；纯函数与合约同口径）
+        const now = Math.floor(Date.now() / 1000);
+        const cs = computeForceSell({
+          balance: BigInt(row.balance || "0"),
+          tierBps: Number(row.target_bps || 0), // 列 target_bps 复用存当期档位（bps）
+          latchedWindowId: Number(row.window_id || 0),
+          latchedQuota: BigInt(row.quota || "0"),
+          latchedSold: BigInt(row.sold_amount || "0"),
+          nowSec: now,
+        });
         res.end(
           JSON.stringify({
             address: addr,
             status: "ok",
-            firstReceiveAt: Number(row.first_receive_at),
-            // v21：窗口截止的绝对时间戳（= 首次收币 + (窗口+1)×15 天）；窗口 4 已结束或未初始化时为 0
-            //      修复：此前前端把 deadlineSec（剩余秒数）当 unix 时间戳格式化 → 显示成 1970-01-14
-            windowEndAt:
-              Number(row.first_receive_at || 0) > 0 && cs.window < 4
-                ? Number(row.first_receive_at) + (cs.window + 1) * 15 * 86400
-                : 0,
-            currentWindow: cs.window,
-            cumTargetPct: cs.cumBps / 100,
-            requiredSell: String(cs.required),
-            soldAmount: row.sold_amount,
+            // v9.2 卖币窗口（每月 14/28 日全天，北京时间）
+            phase: cs.phase, // open=今日卖币日 / pending=今日为结算日 / idle=非卖币日
+            windowId: cs.targetWindowId,
+            // v21 口径保持：windowEndAt 为「绝对时间戳」，deadlineSec 为「剩余秒数」
+            // （此前前端把剩余秒数当时间戳格式化，显示成 1970-01-14）
+            windowEndAt: cs.deadlineSec,
+            deadlineSec: cs.deadlineSec > 0 ? Math.max(0, cs.deadlineSec - now) : 0,
+            nextWindowId: cs.nextWindowId,
+            nextWindowAt: cs.nextStartSec,
+            daysUntilNext: cs.daysUntilNext, // 前端「卖币日前 3 天强提醒」依据
+            tierBps: cs.tierBps, // 2000 首期 / 1000 常规 / 200 达入金 60% 后
+            quota: String(cs.quota), // 当期额度（ZYT wei）
+            soldAmount: String(cs.sold), // 当期已卖（含转账视同卖出）
+            deficit: String(cs.deficit), // 当期欠账（未卖足将被销毁）
             balance: row.balance,
             sellCount: Number(row.sell_count),
+            totalSell: row.total_sell,
             atRisk: cs.atRisk,
             progressPct: Math.min(cs.progressBps / 100, 100),
-            deadlineSec: cs.deadline,
             updatedAt: Number(row.updated_at),
           })
         );

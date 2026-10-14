@@ -110,7 +110,14 @@ if (process.argv.includes("--probe")) {
     ZYTToken: [["getUserCount", []], ["getUserAt", ["uint256"]]],
     ZYTMining: [["powerOf", ["address"]], ["userInfo", ["address"]], ["dailyInfo", ["uint256"]], ["dividendOf", ["address"]]],
     ZYTPoolManager: [["poolZYT", []], ["poolUSDT", []], ["getStage", []], ["getPrice", []]],
-    ZYTForceSell: [["firstReceiveTime", ["address"]], ["soldAmount", ["address"]]],
+    // v9.2：旧 firstReceiveTime/soldAmount 已随 4×15 天模型作废，改为日历窗锁存视图
+    ZYTForceSell: [
+      ["windows", ["address"]],
+      ["firstSellDone", ["address"]],
+      ["tierBpsOf", ["address"]],
+      ["currentWindow", []],
+      ["pendingSettleWindow", []],
+    ],
     ZYTDeflation: [["lastSnapshotDay", []], ["snapshotCount", []]],
   };
   const p = new JsonRpcProvider(RPC, 97, { staticNetwork: true });

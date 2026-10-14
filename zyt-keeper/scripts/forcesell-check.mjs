@@ -1,12 +1,20 @@
 /**
- * 强制卖出追踪验证脚本（#7）
- * 纯函数单测（窗口计算/应卖量/风险判定）+ 追踪器 stub 集成验证
- * 运行：node scripts/forcesell-check.mjs
+ * v9.2 卖币窗口追踪自检（#7）
+ *
+ * 两层验证：
+ *   ① 纯函数日历口径（与合约 ZYTForceSell 同算法）——完整用例见 test/forcesell-window.test.js
+ *   ② ForceSellTracker 集成（stub 链上数据 → syncOnce 入库 → checkAlerts 预警）
+ *
+ * 时间锚固定为「2026-11-14 10:00 北京」（卖币日），并显式传给 syncOnce，
+ * 使自检结果不随运行当天日期漂移。
+ *
+ * 运行：node scripts/forcesell-check.mjs（或 npm run check:forcesell）
  */
 process.env.DB_URL = ":memory:";
 
-const { windowInfo, computeForceSell, FS_WINDOW_SEC } = await import("../src/forcesell.js");
-const { ForceSellTracker } = await import("../src/forcesell.js");
+const { windowIdOf, pendingSettleWindowId, windowPhase, computeForceSell, ForceSellTracker } = await import(
+  "../src/forcesell.js"
+);
 const { getDb } = await import("../src/db.js");
 
 let pass = 0,
@@ -14,91 +22,114 @@ let pass = 0,
 const check = (n, c, e) => {
   c ? (pass++, console.log("  [PASS] " + n + (e ? " " + e : ""))) : (fail++, console.log("  [FAIL] " + n + (e ? " " + e : "")));
 };
-const DAY = 86400;
+const E18 = 10n ** 18n;
+/** 北京时间 y-m-d hh:mm 的 UTC 秒 */
+const bj = (y, m, d, hh = 0, mm = 0) => Math.floor(Date.UTC(y, m - 1, d, hh - 8, mm) / 1000);
 
-console.log("【windowInfo 窗口判定】");
+console.log("【① 日历口径（与合约 _beijingDate 同算法）】");
 {
-  check("第 0 天：窗口 0 无义务", windowInfo(0).window === 0 && windowInfo(0).cumBps === 0);
-  check("第 14.9 天：窗口 0", windowInfo(14 * DAY + 86000).window === 0);
-  check("第 15 天：窗口 1 目标 20%", windowInfo(15 * DAY).window === 1 && windowInfo(15 * DAY).cumBps === 2000);
-  check("第 30 天：窗口 2 累计 30%", windowInfo(30 * DAY).window === 2 && windowInfo(30 * DAY).cumBps === 3000);
-  check("第 45 天：窗口 3 累计 40%", windowInfo(45 * DAY).window === 3 && windowInfo(45 * DAY).cumBps === 4000);
-  check("第 60 天：窗口 4 累计 60%", windowInfo(60 * DAY).window === 4 && windowInfo(60 * DAY).cumBps === 6000);
-  check("第 100 天：仍窗口 4", windowInfo(100 * DAY).window === 4);
+  const winDay = bj(2026, 11, 14, 10, 0);
+  check("2026-11-14 10:00 北京 → 卖币日 20261114", windowIdOf(winDay) === 20261114);
+  check("2026-11-15 00:30 北京 → 昨日窗口 20261114", pendingSettleWindowId(bj(2026, 11, 15, 0, 30)) === 20261114);
+  check("2026-11-16 → 非卖币日", windowIdOf(bj(2026, 11, 16, 10, 0)) === 0);
+  const ph = windowPhase(bj(2026, 11, 16, 10, 0));
+  check("2026-11-16 → idle 且下一窗口为 11-28", ph.phase === "idle" && ph.nextWindowId === 20261128, `daysUntil=${ph.daysUntilNext}`);
 }
 
-console.log("【computeForceSell 应卖量/风险判定】");
+console.log("【② computeForceSell（当期额度 / 欠账 / 风险）】");
 {
-  const now = 1_000_000_000;
-  // 场景：余额 10000 ZYT，未到期（第 5 天），卖 0 → 无风险
-  let cs = computeForceSell(10000n * 10n ** 18n, 0n, now - 5 * DAY, now);
-  check("未到期无风险", cs.atRisk === false && cs.required === 0n);
-  // 场景：第 20 天（窗口1 目标20%），余额 10000，卖 1500（< 2000）→ 有风险
-  cs = computeForceSell(10000n * 10n ** 18n, 1500n * 10n ** 18n, now - 20 * DAY, now);
-  check("窗口1 卖 15% 未达 20% → 风险", cs.atRisk === true);
-  check("应卖量 = 余额×20%", cs.required === 2000n * 10n ** 18n, "required=" + cs.required);
-  // 场景：第 20 天，卖 2500（≥ 2000）→ 无风险
-  cs = computeForceSell(10000n * 10n ** 18n, 2500n * 10n ** 18n, now - 20 * DAY, now);
-  check("窗口1 卖 25% 达标 → 无风险", cs.atRisk === false);
-  // 场景：第 35 天（窗口2 累计 30%），余额 10000，卖 2500（< 3000）→ 风险
-  cs = computeForceSell(10000n * 10n ** 18n, 2500n * 10n ** 18n, now - 35 * DAY, now);
-  check("窗口2 累计 25% 未达 30% → 风险", cs.atRisk === true && cs.required === 3000n * 10n ** 18n);
-  // 场景：第 70 天（窗口4 累计 60%），余额 10000，卖 6000 → 达标；卖 5000 → 风险
-  cs = computeForceSell(10000n * 10n ** 18n, 6000n * 10n ** 18n, now - 70 * DAY, now);
-  check("窗口4 卖 60% 达标", cs.atRisk === false && cs.progressBps === 10000);
-  cs = computeForceSell(10000n * 10n ** 18n, 5000n * 10n ** 18n, now - 70 * DAY, now);
-  check("窗口4 卖 50% → 风险", cs.atRisk === true && cs.progressBps === 8333);
+  const now = bj(2026, 11, 14, 10, 0);
+  // 首期未卖出：额度 = 余额 × 20%
+  let cs = computeForceSell({
+    balance: 10000n * E18,
+    tierBps: 2000,
+    latchedWindowId: 0,
+    latchedQuota: 0n,
+    latchedSold: 0n,
+    nowSec: now,
+  });
+  check("首期额度 = 余额 × 20%", cs.quota === 2000n * E18, "quota=" + cs.quota);
+  check("零卖出 → 全额欠账且 atRisk", cs.atRisk === true && cs.deficit === 2000n * E18);
+  // 已卖足：无欠账、不告警
+  cs = computeForceSell({
+    balance: 10000n * E18,
+    tierBps: 2000,
+    latchedWindowId: 20261114,
+    latchedQuota: 2000n * E18,
+    latchedSold: 2000n * E18,
+    nowSec: now,
+  });
+  check("卖足 → 零欠账不告警", cs.atRisk === false && cs.deficit === 0n && cs.progressBps === 10000);
+  // 非卖币日：无目标窗口
+  cs = computeForceSell({
+    balance: 10000n * E18,
+    tierBps: 1000,
+    latchedWindowId: 0,
+    latchedQuota: 0n,
+    latchedSold: 0n,
+    nowSec: bj(2026, 11, 16, 10, 0),
+  });
+  check("非卖币日无目标窗口", cs.targetWindowId === 0 && cs.atRisk === false);
 }
 
-console.log("【ForceSellTracker stub 集成（同步入库 + 预警）】");
+console.log("【③ ForceSellTracker 集成（stub 链上数据 → 入库 → 预警）】");
 {
-  // 捕获 [ALERT]
   const alerts = [];
   const origWarn = console.warn;
   console.warn = (m) => {
     if (typeof m === "string" && m.includes("[ALERT]")) alerts.push(m);
     origWarn(m);
   };
-  // stub 链上数据：2 个用户
-  const users = [
-    { addr: "0x1111111111111111111111111111111111111111", firstReceive: 1_000_000_000 - 20 * DAY, sold: 1000n * 10n ** 18n, bal: 10000n * 10n ** 18n, sellCount: 1, totalSell: 1000n * 10n ** 18n }, // 窗口1 卖10% < 20% → 风险
-    { addr: "0x2222222222222222222222222222222222222222", firstReceive: 1_000_000_000 - 5 * DAY, sold: 0n, bal: 5000n * 10n ** 18n, sellCount: 0, totalSell: 0n }, // 未到期 → 无风险
-  ];
-  const now = Math.floor(Date.now() / 1000);
-  // 注意：stub 的 firstReceive 用相对 now 计算，避免时间漂移
-  const stubProvider = {};
-  const stubForceSell = {
-    firstReceiveTime: async (a) =>
-      BigInt(a === users[0].addr.toLowerCase() ? now - 20 * DAY : now - 5 * DAY),
-    soldAmount: async (a) => (a === users[0].addr.toLowerCase() ? users[0].sold : 0n),
-    initialized: async () => true,
+
+  const now = bj(2026, 11, 14, 10, 0); // 卖币日锚点，显式传入 syncOnce
+  const u1 = "0x1111111111111111111111111111111111111111"; // 当期零活动 → 应卖 20%
+  const u2 = "0x2222222222222222222222222222222222222222"; // 当期已卖足 → 无风险
+  const latched = {
+    [u1]: [0n, 0n, 0n], // 无锁存
+    [u2]: [20261114n, 2000n * E18, 2000n * E18], // 已锁存且卖足
   };
-  const stubZyt = {
+  const tracker = new ForceSellTracker({ provider: {} });
+  tracker.forceSell = {
+    currentWindow: async () => [20261114n, true],
+    pendingSettleWindow: async () => 0n,
+    windows: async (a) => latched[a.toLowerCase()],
+    tierBpsOf: async () => 2000n,
+    windowSettled: async () => false,
+    keeper: async () => "0x0000000000000000000000000000000000000000",
+  };
+  const bals = { [u1]: 10000n * E18, [u2]: 10000n * E18 };
+  tracker.zyt = {
     getUserCount: async () => 2n,
-    getUserAt: async (i) => users[Number(i)].addr,
-    balanceOf: async (a) => (a === users[0].addr.toLowerCase() ? users[0].bal : users[1].bal),
-    sellInfo: async (a) =>
-      a === users[0].addr.toLowerCase() ? [1n, users[0].totalSell, 0n, 0n, 0n, 0n] : [0n, 0n, 0n, 0n, 0n, 0n],
+    getUserAt: async (i) => [u1, u2][Number(i)],
+    balanceOf: async (a) => bals[a.toLowerCase()],
+    sellInfo: async () => [1n, 0n, 0n, 0n, 0n, 0n],
   };
-  const tracker = new ForceSellTracker({ provider: stubProvider });
-  tracker.forceSell = stubForceSell; // 注入 stub
-  tracker.zyt = stubZyt;
-  const r = await tracker.syncOnce();
+
+  const r = await tracker.syncOnce({ nowSec: now });
   check("同步 2 用户", r.users === 2, "users=" + r.users);
+  check("阶段判定 = open", r.phase === "open", "phase=" + r.phase);
   check("识别 1 个风险用户", r.atRisk === 1, "atRisk=" + r.atRisk);
-  // 查库
+
   const db = await getDb();
-  const row = await db.get("SELECT * FROM force_sell WHERE address=?", ["0x1111111111111111111111111111111111111111"]);
-  check("风险用户入库 current_window=1", row && row.current_window === 1, "window=" + (row && row.current_window));
-  check("风险用户 at_risk=1", row && row.at_risk === 1);
-  check("应卖量记录正确", row && row.required_sell === "2000000000000000000000", "required=" + (row && row.required_sell));
-  // 预警触发
+  const row = await db.get("SELECT * FROM force_sell WHERE address=?", [u1]);
+  check("风险用户 window_id=20261114", row && Number(row.window_id) === 20261114, "window_id=" + (row && row.window_id));
+  check("风险用户 phase=open", row && row.phase === "open");
+  check("额度 = 余额 × 20%", row && row.quota === (2000n * E18).toString(), "quota=" + (row && row.quota));
+  check("欠账 = 额度", row && row.deficit === (2000n * E18).toString());
+  check("at_risk=1", row && Number(row.at_risk) === 1);
+  check(
+    "窗口截止 = 次日 00:00 北京",
+    row && Number(row.deadline_sec) === bj(2026, 11, 15, 0, 0),
+    "deadline=" + (row && row.deadline_sec)
+  );
+
+  const row2 = await db.get("SELECT * FROM force_sell WHERE address=?", [u2]);
+  check("卖足用户不告警", row2 && Number(row2.at_risk) === 0);
+
   const alerted = await tracker.checkAlerts();
   check("预警触发 1 条", alerted === 1 && alerts.filter((a) => a.includes("ForceSell")).length === 1);
-  // 冷却：立即再查 → 不重复
   const alerted2 = await tracker.checkAlerts();
   check("冷却期内不重复预警", alerted2 === 0);
-  // 冷却过期（模拟）后重新预警
   tracker.cooldown.clear();
   const alerted3 = await tracker.checkAlerts();
   check("冷却过期后可再预警", alerted3 === 1);

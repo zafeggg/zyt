@@ -8,7 +8,9 @@
     "start": "node src/index.js",
     "snapshot": "node scripts/snapshot-now.js",
     "reconcile": "node scripts/reconcile.js",
-    "indexer": "node src/indexer.js"
+    "indexer": "node src/indexer.js",
+    "test": "node --test",
+    "check:forcesell": "node scripts/forcesell-check.mjs"
   },
   "dependencies": {
     "dotenv": "^16.4.5",

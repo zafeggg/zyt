@@ -96,22 +96,19 @@ async function main() {
     setInterval(fsSync, CONFIG.forceSell.syncIntervalMs);
     logRun("forcesell", "start", `interval=${CONFIG.forceSell.syncIntervalMs}ms`);
 
-    // 5b. 到期结算：补需求「未执行后果：自动销毁」的调度方。
-    // 对已到期且未卖足的用户调用 ZYTForceSell.settleExpired，由合约销毁差额（不可逆）。
+    // 5b. 到期结算调度：15/29 日凌晨 cron + 兜底轮询。
+    // 合约按「链上时间的昨日」推导目标窗口，非结算日 pendingSettleWindow()=0 → 零操作，
+    // 因此兜底轮询可高频执行（node-cron 无 catch-up，系统休眠会跳过调度点）。
     // 默认关闭，需 FORCESELL_SETTLE_ENABLED=true 显式开启。
-    // 数据源是 syncOnce 写入的 force_sell 表，故启动时刻错开。
     if (CONFIG.forceSell.settleEnabled) {
-      const fsSettle = () =>
-        fsTracker.settleExpiredOnce().catch((e) => logRun("forcesell", "error", `settle: ${e.message}`));
-      setTimeout(fsSettle, 30_000); // 启动 30s 后首轮（等首轮 sync 落库）
-      setInterval(fsSettle, CONFIG.forceSell.settleIntervalMs);
+      fsTracker.startScheduler();
       const signerState = fsTracker.settleSignerReady
         ? `signer=${fsTracker.settleSignerAddress}`
         : "signer=NOT_CONFIGURED (结算将拒绝执行)";
       logRun(
         "forcesell",
         "start",
-        `settle interval=${CONFIG.forceSell.settleIntervalMs}ms maxPerRun=${CONFIG.forceSell.settleMaxPerRun} ${signerState}`
+        `settle maxPerRun=${CONFIG.forceSell.settleMaxPerRun} ${signerState}`
       );
     } else {
       logRun("forcesell", "skip", "settle disabled (set FORCESELL_SETTLE_ENABLED=true to enable)");

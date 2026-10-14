@@ -49,22 +49,26 @@ export const CONFIG = {
     // 首次追块或重启后补块时连续请求会触发 429，加入间隔可稳定同步；设 0 关闭
     batchDelayMs: Number(process.env.BATCH_DELAY_MS ?? 1200),
   },
-  // 强制卖出窗口链下追踪（生产缺口 #7）：
-  // 遍历链上 userList 读 firstReceiveTime/soldAmount/balance，按合约同款公式
-  // 计算 4×15 天窗口应卖量/风险状态，未卖足预警
+  // v9.2 卖币窗口链下追踪（14/28 日历窗）：
+  // 读链上锁存状态（windows/firstSellDone/tierBpsOf）+ 余额，按合约同口径推导
+  // 当期额度/欠账/风险，写入 force_sell 表供前端 /force-sell/:addr 展示
   forceSell: {
     enabled: process.env.FORCESELL_ENABLED !== "false",
     syncIntervalMs: Number(process.env.FORCESELL_SYNC_MS || 600000), // 10min 同步一次
     alertCooldownMs: Number(process.env.FORCESELL_ALERT_COOLDOWN_MS || 3600000), // 每用户预警冷却 1h
 
-    // ===== 到期结算（补需求「未执行后果：自动销毁」的调度方）=====
-    // 动作内容：遍历已到期且未卖足的用户，逐个调用 ZYTForceSell.settleExpired(addr)，
-    //          由合约销毁差额（不可逆）。合约侧有 settledWindows 位图保证同一窗口只结算一次，
-    //          此处再加一层本地预判以省 gas。
+    // ===== 到期结算（未卖足部分由合约销毁，不可逆）=====
+    // 调度：15/29 日凌晨 cron 触发 + 兜底轮询。
+    // 合约按「链上时间的昨日」推导目标窗口，非结算日 pendingSettleWindow()=0 → 零操作，
+    // 因此兜底轮询安全（node-cron 无 catch-up，系统休眠可能跳过调度点）。
+    // cron 表达式用 UTC 时区书写避免依赖系统时区：
+    //   "30 16 14,28 * *"（UTC）= 北京 15 日 / 29 日 00:30
     // ⚠️ 默认关闭。开启前请确认：keeper 钱包有 BNB、账本 reconcile 无差异、合约 keeper 地址为本钱包。
     //    设 FORCESELL_SETTLE_ENABLED=true 才生效。
     settleEnabled: process.env.FORCESELL_SETTLE_ENABLED === "true",
-    settleIntervalMs: Number(process.env.FORCESELL_SETTLE_MS || 3600000), // 结算轮询间隔 1h
+    settleCron: process.env.FORCESELL_SETTLE_CRON || "30 16 14,28 * *",
+    settleCronTz: process.env.FORCESELL_SETTLE_CRON_TZ || "UTC",
+    settleCatchUpMs: Number(process.env.FORCESELL_SETTLE_CATCHUP_MS || 1800000), // 兜底轮询 30min
     settleMaxPerRun: Number(process.env.FORCESELL_SETTLE_MAX_PER_RUN || 10), // 单轮最多结算笔数（控 gas）
     settleTxGapMs: Number(process.env.FORCESELL_SETTLE_TX_GAP_MS || 3000), // 单笔间隔，防 nonce 冲突与 RPC 限流
   },

@@ -1,80 +1,244 @@
+import cron from "node-cron";
 import { JsonRpcProvider, Contract, Wallet, formatEther } from "ethers";
 import { CONFIG } from "./config.js";
 import { getDb } from "./db.js";
 import { logRun, notify } from "./alert.js";
 
 /**
- * 强制卖出窗口链下追踪（生产缺口 #7）
+ * v9.2 卖币窗口链下追踪与到期结算
  *
- * 与 ZYTForceSell 合约同款参数（口径 2026-09-22 用户确认）：
- *   4×15 天窗口，累计应卖目标（基点）：20% / 30% / 40% / 50%
- *   （每期最低卖出 20% / 10% / 10% / 10%，逐期累计）
- *   required = 当前余额 × 累计目标 / 10000（与合约 checkAndBurn 公式一致）
- *   窗口到期未卖足 → 链上转账时差额自动销毁（atRisk 预警该风险）
+ * 合约口径（ZYTForceSell，2026-10-13/14 拍板终版）：
+ *   - 唯一卖币窗口：每月 14 日、28 日全天（北京时间 UTC+8）；窗口外真实卖出 revert
+ *   - 当期额度 = 该窗口首次活动时的持币数量 × 档位，锁存于窗口内（不可多卖）
+ *     档位：首期 20% / 常规 10% / 累计卖出达入金 60% 后 2%（档位由合约 tierBpsOf 给出，链下不重算）
+ *   - 未卖足：次日凌晨（15 日 / 29 日）由 keeper 调 settleExpired 销毁差额，无宽限期
+ *   - 转账视同卖出：计入当期已卖与首期进度；窗口外转账不阻断、不计入任何窗口
  *
- * 数据源：链上权威（ZYTToken.userList 遍历 + ZYTForceSell 视图），不依赖事件重建。
- * 写入 force_sell 表供前端 /force-sell/:addr 查询（#8 前端接 API 数据源）。
+ * 日历口径必须与合约 `ZYTForceSell._beijingDate`（Howard Hinnant civil_from_days，
+ * 纯整数，z = (ts + 8h)/86400 + 719468）逐字一致，否则链上链下判定会分叉。
+ *
+ * 本模块职责：
+ *   1) 纯函数（可单测、API 复用）：北京时间日期换算、窗口 id、阶段、当期额度/欠账推导
+ *   2) ForceSellTracker：链上权威读取 → 写入 force_sell 表 → 风险预警 → 到期结算
+ *   3) 结算调度：15/29 日凌晨 cron + 休眠唤醒兜底（合约按链上时间推导目标窗口，
+ *      非结算日 pendingSettleWindow()=0 → 零操作，故兜底轮询安全）
  */
 
 // ===================== 纯函数（可单测，API 复用） =====================
 
-export const FS_WINDOW_SEC = 15 * 86400; // 15 天
-/** 各窗口累计应卖目标（基点）：窗口1=20%、窗口2=30%、窗口3=40%、窗口4=50% */
-export const FS_CUM_TARGETS = [2000, 3000, 4000, 5000];
+export const TZ_OFFSET_SEC = 8 * 3600; // 北京时间 UTC+8
+export const DAY_SEC = 86400;
 
-/**
- * 根据 elapsed 计算当前窗口信息（纯函数）
- * @param {number} elapsedSec 距首次收币的秒数
- * @returns {{window: number, cumBps: number, deadline: number}}
- *   window: 0=未到期 / 1-4=当前窗口；cumBps=累计应卖目标基点；deadline=距下窗口截止秒（0=已结束）
- */
-export function windowInfo(elapsedSec) {
-  if (elapsedSec < FS_WINDOW_SEC) return { window: 0, cumBps: 0, deadline: FS_WINDOW_SEC - elapsedSec };
-  if (elapsedSec < 2 * FS_WINDOW_SEC) return { window: 1, cumBps: FS_CUM_TARGETS[0], deadline: 2 * FS_WINDOW_SEC - elapsedSec };
-  if (elapsedSec < 3 * FS_WINDOW_SEC) return { window: 2, cumBps: FS_CUM_TARGETS[1], deadline: 3 * FS_WINDOW_SEC - elapsedSec };
-  if (elapsedSec < 4 * FS_WINDOW_SEC) return { window: 3, cumBps: FS_CUM_TARGETS[2], deadline: 4 * FS_WINDOW_SEC - elapsedSec };
-  return { window: 4, cumBps: FS_CUM_TARGETS[3], deadline: 0 };
+/** 基点常量（与合约一致，仅用于展示兜底；权威档位以合约 tierBpsOf 为准） */
+export const TIER_FIRST_BPS = 2000;
+export const TIER_STEP_BPS = 1000;
+export const TIER_AFTER60_BPS = 200;
+
+/** civil_from_days：自 1970-01-01 起的整数天数 → 公历（与合约同算法） */
+function civilFromDays(z) {
+  const era = Math.floor(z / 146097);
+  const doe = z - era * 146097;
+  const yoe = Math.floor(
+    (doe - Math.floor(doe / 1460) + Math.floor(doe / 36524) - Math.floor(doe / 146096)) / 365
+  );
+  let y = yoe + era * 400;
+  const doy = doe - (365 * yoe + Math.floor(yoe / 4) - Math.floor(yoe / 100));
+  const mp = Math.floor((5 * doy + 2) / 153);
+  const d = doy - Math.floor((153 * mp + 2) / 5) + 1;
+  const m = mp < 10 ? mp + 3 : mp - 9;
+  if (m <= 2) y += 1;
+  return { y, m, d };
+}
+
+/** 时间戳 → 北京时间公历日期 */
+export function beijingDate(tsSec) {
+  const z = Math.floor((Number(tsSec) + TZ_OFFSET_SEC) / DAY_SEC) + 719468;
+  return civilFromDays(z);
+}
+
+/** 卖币日窗口 id（形如 20261014 / 20261028）；非 14/28 日返回 0（与合约 _windowIdAt 同口径） */
+export function windowIdOf(tsSec) {
+  const { y, m, d } = beijingDate(tsSec);
+  if (d === 14 || d === 28) return y * 10000 + m * 100 + d;
+  return 0;
+}
+
+/** 该时刻所属北京日的 00:00（UTC 秒） */
+export function beijingDayStart(tsSec) {
+  const dayIdx = Math.floor((Number(tsSec) + TZ_OFFSET_SEC) / DAY_SEC);
+  return dayIdx * DAY_SEC - TZ_OFFSET_SEC;
+}
+
+/** 该时刻所属北京日的 24:00（UTC 秒）＝ 次日 00:00 北京 */
+export function beijingDayEnd(tsSec) {
+  return beijingDayStart(tsSec) + DAY_SEC;
+}
+
+/** 待结算窗口 id：昨日为卖币日则返回其 id（与合约 _previousWindowId 同口径） */
+export function pendingSettleWindowId(nowSec) {
+  return windowIdOf(Number(nowSec) - DAY_SEC);
+}
+
+/** 自 nowSec 起（含当日）的下一个卖币日 */
+export function nextWindowFrom(nowSec) {
+  for (let i = 0; i <= 40; i++) {
+    const t = Number(nowSec) + i * DAY_SEC;
+    const id = windowIdOf(t);
+    if (id) {
+      return { windowId: id, startSec: beijingDayStart(t), endSec: beijingDayEnd(t), daysUntil: i };
+    }
+  }
+  return null;
 }
 
 /**
- * 计算强制卖出状态（纯函数，与合约公式一致）
- * @param {bigint} balance 当前余额
- * @param {bigint} soldAmount 累计已卖（含转账视同卖出）
- * @param {number} firstReceiveAt 首次收币时间戳（秒）
- * @param {number} nowSec 当前时间戳（秒）
- * @returns {{window:number, cumBps:number, deadline:number, elapsed:number, required:bigint, atRisk:boolean, progressBps:number}}
+ * 当前阶段（前端提醒与结算调度共用）
+ * @returns {{phase:'open'|'pending'|'idle', windowId:number, endSec:number,
+ *            nextWindowId:number, nextStartSec:number, daysUntilNext:number}}
+ *   open    今日为卖币日（窗口开放中）
+ *   pending 昨日为卖币日（今日 15/29，等待 keeper 结算）
+ *   idle    既非卖币日也非结算日
  */
-export function computeForceSell(balance, soldAmount, firstReceiveAt, nowSec) {
-  // 未首次收币（firstReceiveAt=0）：不进入强制卖出规则。
-  // 2026-09-26 修复：原实现 elapsed = nowSec - 0 得到当前时间戳（约 17.9 亿秒），
-  //   被 windowInfo 误判为「已过第 4 窗口、累计应卖 50%」，前端对纯入金用户显示错误的窗口与目标。
-  if (!firstReceiveAt || firstReceiveAt <= 0) {
-    return { window: 0, cumBps: 0, deadline: 0, elapsed: 0, required: 0n, atRisk: false, progressBps: 10000 };
+export function windowPhase(nowSec) {
+  const now = Number(nowSec);
+  const nx = nextWindowFrom(now);
+  const nextWindowId = nx ? nx.windowId : 0;
+  const nextStartSec = nx ? nx.startSec : 0;
+  const daysUntilNext = nx ? nx.daysUntil : -1;
+
+  const cur = windowIdOf(now);
+  if (cur) {
+    return {
+      phase: "open",
+      windowId: cur,
+      endSec: beijingDayEnd(now),
+      nextWindowId,
+      nextStartSec,
+      daysUntilNext,
+    };
   }
-  const elapsed = nowSec - firstReceiveAt;
-  const wi = windowInfo(elapsed);
-  const required = (balance * BigInt(wi.cumBps)) / 10000n;
-  // atRisk：已进入强制窗口（≥15 天）且累计卖出 < 应卖量（继续持有将在下次转账/窗口结算时被销毁）
-  const atRisk = wi.window >= 1 && soldAmount < required;
-  // 进度（基点）：应卖量=0（未到期）时视为已完成
-  const progressBps = required > 0n ? Number((soldAmount * 10000n) / required) : 10000;
-  return { ...wi, elapsed, required, atRisk, progressBps };
+  const pend = pendingSettleWindowId(now);
+  if (pend) {
+    return {
+      phase: "pending",
+      windowId: pend,
+      endSec: beijingDayEnd(now - DAY_SEC),
+      nextWindowId,
+      nextStartSec,
+      daysUntilNext,
+    };
+  }
+  return {
+    phase: "idle",
+    windowId: 0,
+    endSec: 0,
+    nextWindowId,
+    nextStartSec,
+    daysUntilNext,
+  };
+}
+
+/**
+ * 推导当期额度与欠账（与合约 checkAndBurn / settleExpired 同口径）
+ *
+ * 合约口径：
+ *   - 窗口内首次活动时锁存 quota = 转账前余额 × 档位；此后该窗口 sold 累加
+ *   - 结算「目标窗口」时：若锁存窗口 == 目标窗口 → 用锁存 quota/sold；否则用「当前余额 × 档位」
+ *     （该窗口无活动 ⇒ 余额自窗口起未变，两者等价）
+ *
+ * @param {object} p
+ * @param {bigint} p.balance        当前持币
+ * @param {number} p.tierBps        当期档位（合约 tierBpsOf）
+ * @param {number} p.latchedWindowId 链上锁存窗口 id（0 = 无）
+ * @param {bigint} p.latchedQuota   链上锁存额度
+ * @param {bigint} p.latchedSold    链上该窗口已卖
+ * @param {number} p.targetWindowId 要评估的窗口 id（open 阶段 = 当前窗口；pending 阶段 = 待结算窗口）
+ */
+export function computeWindowQuota({
+  balance,
+  tierBps,
+  latchedWindowId,
+  latchedQuota,
+  latchedSold,
+  targetWindowId,
+}) {
+  const bal = BigInt(balance ?? 0);
+  const latched = Number(latchedWindowId ?? 0) === Number(targetWindowId) && Number(targetWindowId) !== 0;
+  const quota = latched ? BigInt(latchedQuota ?? 0) : (bal * BigInt(tierBps || 0)) / 10000n;
+  const sold = latched ? BigInt(latchedSold ?? 0) : 0n;
+  const deficit = sold < quota ? quota - sold : 0n;
+  const progressBps = quota > 0n ? Number((sold * 10000n) / quota) : 10000;
+  return { latched, quota, sold, deficit, progressBps };
+}
+
+/**
+ * 计算卖币窗口全量状态（纯函数，API 与追踪器共用）
+ * @returns {{phase, windowId, endSec, nextWindowId, daysUntilNext, tierBps,
+ *            quota, sold, deficit, atRisk, progressBps, deadlineSec}}
+ *   deadlineSec：当前评估窗口的绝对截止时间戳（秒）；idle 阶段为 0。
+ *               前端如需「剩余秒数」自行做 deadlineSec - now（v21 教训：勿把剩余秒数当时戳格式化）。
+ */
+export function computeForceSell({
+  balance,
+  tierBps,
+  latchedWindowId,
+  latchedQuota,
+  latchedSold,
+  nowSec,
+}) {
+  const ph = windowPhase(nowSec);
+  let targetWindowId = 0;
+  let deadlineSec = 0;
+  if (ph.phase === "open") {
+    targetWindowId = ph.windowId;
+    deadlineSec = ph.endSec;
+  } else if (ph.phase === "pending") {
+    targetWindowId = ph.windowId;
+    deadlineSec = ph.endSec; // 已过（窗口刚结束，等待销毁）
+  }
+
+  const q = computeWindowQuota({
+    balance,
+    tierBps,
+    latchedWindowId,
+    latchedQuota,
+    latchedSold,
+    targetWindowId,
+  });
+
+  // atRisk：评估窗口内未卖足。open = 今天还能卖；pending = 销毁迫在眉睫。
+  const atRisk = targetWindowId !== 0 && q.deficit > 0n;
+
+  return {
+    ...ph,
+    targetWindowId,
+    tierBps: Number(tierBps || 0),
+    quota: q.quota,
+    sold: q.sold,
+    deficit: q.deficit,
+    latched: q.latched,
+    progressBps: q.progressBps,
+    atRisk,
+    deadlineSec,
+  };
 }
 
 // ===================== 追踪器 =====================
 
 const FORCESELL_ABI = [
-  "function firstReceiveTime(address) view returns (uint256)",
-  "function soldAmount(address) view returns (uint256)",
+  // v9.2：窗口锁存（windowId, quota, sold）
+  "function windows(address) view returns (uint256,uint256,uint256)",
+  "function firstSellDone(address) view returns (bool)",
   "function initialized(address) view returns (bool)",
-  // 到期结算相关（读）：settledWindows 为位图，第 n 位置位表示第 n+1 个窗口已结算
-  "function settledWindows(address) view returns (uint256)",
+  "function tierBpsOf(address) view returns (uint256)",
+  "function currentWindow() view returns (uint256,bool)",
+  "function pendingSettleWindow() view returns (uint256)",
+  "function windowSettled(address,uint256) view returns (bool)",
   "function keeper() view returns (address)",
 ];
 /** 写通道 ABI（需签名钱包）：settleExpired 由合约销毁未卖足差额，链上不可逆 */
 const FORCESELL_WRITE_ABI = [
   "function settleExpired(address) returns (uint256)",
-  // 结算事件（用于解析本次销毁量）
   "event ForceSellBurned(address indexed user, uint256 amount, uint256 window)",
 ];
 const ZYT_FS_ABI = [
@@ -110,13 +274,12 @@ export class ForceSellTracker {
   }
 
   /**
-   * 同步各用户强制卖出状态入库。
+   * 同步各用户卖币窗口状态入库。
    * 用户集合 = keeper 账本 users ∪ 链上 userList（并集去重）：
    *  - 账本覆盖全部入金用户（含只入金、未持币者，链上 userList 不含这类地址）
    *  - 链上 userList 兜底账本索引异常的情况
-   * 2026-09-26 修改：原实现仅遍历 userList，导致无持币记录的入金用户在前端显示 no-data。
    */
-  async syncOnce() {
+  async syncOnce({ nowSec } = {}) {
     const db = await getDb();
     const addrSet = new Map();
     const rows = await db.all("SELECT address FROM users");
@@ -127,40 +290,79 @@ export class ForceSellTracker {
     } catch (e) {
       logRun("forcesell", "gap", `userList 读取失败，仅用账本用户: ${String(e.message).slice(0, 60)}`);
     }
-    const now = Math.floor(Date.now() / 1000);
+
+    const now = Number(nowSec) || Math.floor(Date.now() / 1000);
+    // 全局窗口状态只读一次（窗口为全局日历，与用户无关）
+    const [chainCurWin] = await this.forceSell.currentWindow();
+    const chainPendingWin = Number(await this.forceSell.pendingSettleWindow());
+    const ph = windowPhase(now);
+    const needTier = ph.phase === "open" || ph.phase === "pending";
+    const targetWindowId = ph.phase === "idle" ? 0 : ph.windowId;
+
     let atRiskCount = 0;
+    let scanned = 0;
     for (const addr of addrSet.keys()) {
-      // 并行读链上权威数据（4 个 view 调用）
-      const [firstReceive, sold, bal, sellInfo] = await Promise.all([
-        this.forceSell.firstReceiveTime(addr),
-        this.forceSell.soldAmount(addr),
+      // 并行读链上权威数据：锁存窗口状态 + 余额（2 个 view）
+      const [win, bal] = await Promise.all([
+        this.forceSell.windows(addr),
         this.zyt.balanceOf(addr),
-        this.zyt.sellInfo(addr),
       ]);
-      const cs = computeForceSell(bal, sold, Number(firstReceive), now);
-      if (cs.atRisk) atRiskCount++;
+      const latchedWindowId = Number(win[0]);
+      const latchedQuota = BigInt(win[1]);
+      const latchedSold = BigInt(win[2]);
+      const balance = BigInt(bal);
+
+      // 无余额且无窗口锁存 → 既无欠账可销毁也无额度可言，跳过（省 RPC，仍写入基础行）
+      const noRisk = balance === 0n && latchedWindowId === 0;
+      let tierBps = 0;
+      let cs = null;
+      let sellInfo = [0n, 0n, 0n, 0n, 0n, 0n];
+      if (!noRisk) {
+        [tierBps, sellInfo] = await Promise.all([
+          needTier ? this.forceSell.tierBpsOf(addr) : Promise.resolve(0),
+          this.zyt.sellInfo(addr),
+        ]);
+        cs = computeForceSell({
+          balance,
+          tierBps,
+          latchedWindowId,
+          latchedQuota,
+          latchedSold,
+          nowSec: now,
+        });
+        if (cs.atRisk) atRiskCount++;
+        scanned++;
+      }
+
       await db.run(
         `INSERT OR REPLACE INTO force_sell
-         (address, first_receive_at, sold_amount, balance, current_window, target_bps,
-          required_sell, sell_count, total_sell, at_risk, updated_at)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+         (address, window_id, phase, balance, target_bps, quota, sold_amount, deficit,
+          deadline_sec, sell_count, total_sell, at_risk, updated_at, first_receive_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
         [
           addr,
-          Number(firstReceive),
-          String(sold),
-          String(bal),
-          cs.window,
-          cs.cumBps,
-          String(cs.required),
+          cs ? cs.targetWindowId : 0,
+          cs ? cs.phase : ph.phase,
+          String(balance),
+          Number(tierBps || 0),
+          String(cs ? cs.quota : 0n),
+          String(cs ? cs.sold : 0n),
+          String(cs ? cs.deficit : 0n),
+          cs ? cs.deadlineSec : 0,
           Number(sellInfo[0]),
           String(sellInfo[1]),
-          cs.atRisk ? 1 : 0,
+          cs && cs.atRisk ? 1 : 0,
           now,
+          Number(sellInfo[3]), // 首收时间（留档；v9.2 规则已不依赖它）
         ]
       );
     }
-    logRun("forcesell", "ok", `users=${addrSet.size} atRisk=${atRiskCount}`);
-    return { users: addrSet.size, atRisk: atRiskCount };
+    logRun(
+      "forcesell",
+      "ok",
+      `users=${addrSet.size} scanned=${scanned} atRisk=${atRiskCount} phase=${ph.phase} win=${chainCurWin} pending=${chainPendingWin}`
+    );
+    return { users: addrSet.size, scanned, atRisk: atRiskCount, phase: ph.phase };
   }
 
   /** 未卖足风险预警（每用户冷却，默认 1h） */
@@ -172,12 +374,18 @@ export class ForceSellTracker {
       const last = this.cooldown.get(row.address) || 0;
       if (Date.now() - last < CONFIG.forceSell.alertCooldownMs) continue;
       this.cooldown.set(row.address, Date.now());
-      const required = BigInt(row.required_sell || "0");
+      const quota = BigInt(row.quota || "0");
       const sold = BigInt(row.sold_amount || "0");
+      const deficit = BigInt(row.deficit || "0");
       alerted++;
-      logRun("forcesell", "alert", `[${row.address.slice(0, 10)}] 窗口${row.current_window} 未卖足：已卖 ${formatEther(sold)} / 应卖 ${formatEther(required)} ZYT`);
+      const when = row.phase === "pending" ? "窗口已结束，销毁迫近" : "窗口开放中";
+      logRun(
+        "forcesell",
+        "alert",
+        `[${row.address.slice(0, 10)}] 窗口${row.window_id} ${when}：已卖 ${formatEther(sold)} / 额度 ${formatEther(quota)} ZYT，欠 ${formatEther(deficit)}`
+      );
       await notify(
-        `[ZYT ForceSell][风险] ${row.address.slice(0, 10)} 窗口${row.current_window} 未卖足（已卖 ${formatEther(sold)} / 应卖 ${formatEther(required)} ZYT），继续持有将触发自动销毁`
+        `[ZYT ForceSell][风险] ${row.address.slice(0, 10)} 窗口${row.window_id} ${when}（已卖 ${formatEther(sold)} / 额度 ${formatEther(quota)} ZYT），未卖足部分将被销毁`
       );
     }
     if (alerted > 0) logRun("forcesell", "alert", `total=${alerted} risk users`);
@@ -185,32 +393,34 @@ export class ForceSellTracker {
   }
 
   /**
-   * 到期结算一轮：对已到期且未卖足的用户调用合约 settleExpired，由合约销毁差额。
+   * 到期结算一轮：对「待结算窗口内未卖足」的用户调用合约 settleExpired。
    *
-   * 数据源为 force_sell 表（由 syncOnce 按链上权威写入），此处不再二次遍历 userList。
    * 三重保护：
-   *   1. 开关（FORCESELL_SETTLE_ENABLED，默认关，需显式开启）
-   *   2. 单轮上限 settleMaxPerRun，控 gas 支出
-   *   3. 本地预判 settledWindows 位图，已结算窗口跳过（合约侧同样会拦，此处省 gas）
+   *   1. 开关（FORCESELL_SETTLE_ENABLED，默认关）
+   *   2. 非结算日零操作：合约 pendingSettleWindow() === 0（昨日非 14/28 日）直接返回，
+   *      因此本方法可安全地高频兜底轮询
+   *   3. 本地预判 windowSettled(user, windowId)，已结算跳过（合约侧同样会拦，此处省 gas）
    * 单笔失败不阻断后续；每笔之间留 settleTxGapMs 间隔防 nonce 冲突。
-   *
-   * @returns {Promise<{scanned:number, settled:number, burned:string, skipped:number, failed:number}>}
    */
   async settleExpiredOnce() {
     const db = await getDb();
     if (!this.settleSignerReady) {
-      const msg = "settle skipped: KEEPER_PRIVATE_KEY not configured";
-      logRun("forcesell", "error", msg);
-      return { scanned: 0, settled: 0, burned: "0", skipped: 0, failed: 0 };
+      logRun("forcesell", "error", "settle skipped: KEEPER_PRIVATE_KEY not configured");
+      return { scanned: 0, settled: 0, burned: "0", skipped: 0, failed: 0, reason: "no-signer" };
     }
 
-    // 只取已到期（current_window >= 1）且在风险中的用户；先到期的优先结算。
-    // LIMIT 值直接内联（纯数字，避免 SQLite/MySQL 方言对占位符的差异）。
+    // 非结算日：合约推导的目标窗口为 0 → 零操作（高频轮询安全）
+    const pendingWin = Number(await this.forceSell.pendingSettleWindow());
+    if (pendingWin === 0) {
+      return { scanned: 0, settled: 0, burned: "0", skipped: 0, failed: 0, reason: "not-settle-day" };
+    }
+
+    // LIMIT 直接内联（纯数字，避免 SQLite/MySQL 方言对占位符的差异）
     const limit = Math.max(1, Number(CONFIG.forceSell.settleMaxPerRun) || 10);
     const rows = await db.all(
-      `SELECT address, current_window FROM force_sell
-       WHERE at_risk=1 AND current_window >= 1
-       ORDER BY first_receive_at ASC LIMIT ${limit}`
+      `SELECT address FROM force_sell
+       WHERE at_risk=1 AND window_id=${pendingWin}
+       ORDER BY deficit DESC LIMIT ${limit}`
     );
 
     let settled = 0;
@@ -220,11 +430,9 @@ export class ForceSellTracker {
 
     for (const row of rows) {
       const addr = row.address;
-      const win = Number(row.current_window);
       try {
-        // 预判：位图第 (win-1) 位置位表示该窗口已结算
-        const mask = await this.forceSell.settledWindows(addr);
-        if ((BigInt(mask) & (1n << BigInt(win - 1))) !== 0n) {
+        // 预判：该用户该窗口是否已结算
+        if (await this.forceSell.windowSettled(addr, pendingWin)) {
           skipped++;
           continue;
         }
@@ -248,11 +456,11 @@ export class ForceSellTracker {
         logRun(
           "forcesell",
           "settle",
-          `[${addr.slice(0, 10)}] win=${win} burned=${formatEther(burned)} ZYT tx=${tx.hash}`
+          `[${addr.slice(0, 10)}] win=${pendingWin} burned=${formatEther(burned)} ZYT tx=${tx.hash}`
         );
         if (burned > 0n) {
           await notify(
-            `[ZYT ForceSell][结算] ${addr.slice(0, 10)} 窗口${win} 未卖足，已自动销毁 ${formatEther(burned)} ZYT`
+            `[ZYT ForceSell][结算] ${addr.slice(0, 10)} 窗口${pendingWin} 未卖足，已自动销毁 ${formatEther(burned)} ZYT`
           );
         }
       } catch (e) {
@@ -268,8 +476,29 @@ export class ForceSellTracker {
     logRun(
       "forcesell",
       "ok",
-      `settle scanned=${rows.length} settled=${settled} skipped=${skipped} failed=${failed} burned=${formatEther(burnedTotal)}`
+      `settle win=${pendingWin} scanned=${rows.length} settled=${settled} skipped=${skipped} failed=${failed} burned=${formatEther(burnedTotal)}`
     );
-    return { scanned: rows.length, settled, burned: burnedTotal.toString(), skipped, failed };
+    return { scanned: rows.length, settled, burned: burnedTotal.toString(), skipped, failed, windowId: pendingWin };
+  }
+
+  /**
+   * 启动结算调度：15/29 日凌晨 cron + 休眠唤醒兜底
+   * （node-cron 无 catch-up；合约允许在 15/29 日全天结算，故兜底轮询可在唤醒后补齐）
+   */
+  startScheduler() {
+    if (this.settleCronTask) return;
+    const expr = CONFIG.forceSell.settleCron;
+    const tz = CONFIG.forceSell.settleCronTz;
+    this.settleCronTask = cron.schedule(expr, () => this.settleExpiredOnce(), { timezone: tz });
+    const gapMs = Number(CONFIG.forceSell.settleCatchUpMs) || 30 * 60_000;
+    this.settleCatchUpTimer = setTimeout(() => this.settleExpiredOnce(), 60_000);
+    this.settleCatchUpInterval = setInterval(() => this.settleExpiredOnce(), gapMs);
+    logRun("forcesell", "start", `settle cron="${expr}" tz=${tz} catchUp=${gapMs}ms`);
+  }
+
+  stopScheduler() {
+    if (this.settleCronTask) this.settleCronTask.stop();
+    if (this.settleCatchUpTimer) clearTimeout(this.settleCatchUpTimer);
+    if (this.settleCatchUpInterval) clearInterval(this.settleCatchUpInterval);
   }
 }
