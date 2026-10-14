@@ -25,6 +25,10 @@ export interface ChainConfig {
     usdt: string;
     /** v17：底池创建合约（入金 60% 通道）。留空字符串 = 未接线，前端跳过相关展示 */
     creator: string;
+    /** v9.2：迁移兑换合约 ZYTSwap（旧币 1:1 兑换）。留空 = 迁移未开始，兑换页显示未开放 */
+    swap: string;
+    /** v9.2：迁移前旧 ZYT 代币地址（兑换页需授权该币给 ZYTSwap） */
+    oldZyt: string;
   };
 }
 
@@ -52,6 +56,9 @@ const LOCAL: ChainConfig = {
     deflation: "0xB7f8BC63BbcaD18155201308C8f3540b07f84F5e",
     usdt: "0x5FbDB2315678afecb367f032d93F642f64180aa3",
     creator: "0x5FC8d32690cc91D4c39d9d3abcBD16989F875707",
+    // v9.2 迁移兑换（本地默认未部署 ZYTSwap；需要时手动填地址后兑换页自动可点）
+    swap: "",
+    oldZyt: "",
   },
 };
 
@@ -79,6 +86,9 @@ const BSC_TESTNET: ChainConfig = {
     usdt: "0x33F797D0cC0a5462809c957641A09B37FeeFF41A",
     // v9：锁仓合约（LP 锁仓 + 通缩抽池，建池数据展示数据源）
     creator: "0x9bFccB1ADb2da1d634aC9CF426e5e276754a6F74",
+    // v9.2 迁移兑换（测试网彩排时填入 ZYTSwap 与旧 ZYT 地址）
+    swap: "",
+    oldZyt: "",
   },
 };
 
@@ -106,6 +116,10 @@ const BSC_MAINNET: ChainConfig = {
     usdt: "0x55d398326f99059fF775485246999027B3197955",
     // 底池创建合约（入金 60% 通道 + 每日通缩撤池）
     creator: "0x41799040658764d91C94AF16b8B461f2fc1A040F",
+    // v9.2 迁移兑换：主网切换时填入新部署的 ZYTSwap 与旧 ZYT（0xa64E6ab9…）地址
+    //   swap 留空 = 迁移未开始 → 兑换页显示「未开放」，不影响其他功能
+    swap: "",
+    oldZyt: "0xa64E6ab9A8a61f55eE9B1521312783AE033fd546", // 旧版 ZYT（迁移前代币）
   },
 };
 

@@ -9,6 +9,9 @@ export interface PoolStats {
   // v9 真池口径：poolGST/snapshotGST 已废弃；peakPoolUSDT = 滑点档位基准（max(初始, 历史峰值)）
   poolZYT: string;
   poolUSDT: string;
+  /** v9.2：滑点档位基准 = 当日 08:01 快照池 U（合约 snapshotPoolUSDT） */
+  snapshotPoolUSDT: string;
+  /** 历史峰值池 U（v9.2 起降级为纯统计，不再参与档位判定） */
   peakPoolUSDT: string;
   price: string;
   stage: number;
@@ -57,6 +60,7 @@ export interface UserStats {
 const poolStats = ref<PoolStats>({
   poolZYT: "0",
   poolUSDT: "0",
+  snapshotPoolUSDT: "0",
   peakPoolUSDT: "0",
   price: "0",
   stage: 0,
@@ -143,6 +147,8 @@ export function usePoolData() {
         poolStats.value = {
           poolZYT: formatEther(BigInt(p.pool_zyt || "0")),
           poolUSDT: formatEther(BigInt(p.pool_usdt || "0")),
+          // v9.2：滑点基准取 keeper 同步的 snapshot_pool_usdt；峰值降级为统计
+          snapshotPoolUSDT: formatEther(BigInt(p.snapshot_pool_usdt || "0")),
           peakPoolUSDT: formatEther(BigInt(p.snapshot_gst || "0")),
           price: formatEther(BigInt(p.price || "0")),
           stage: Number(p.stage || 0),
@@ -160,10 +166,11 @@ export function usePoolData() {
         // ===== 降级：合约直连（v13：走公共只读 RPC，无需钱包连接） =====
         source.value = "chain";
         const { pool } = getContracts(false);
-        const [zytRes, usdtRes, peak, price, stage, slip, divPool, lpBurned] = await Promise.all([
+        const [zytRes, usdtRes, peak, snapU, price, stage, slip, divPool, lpBurned] = await Promise.all([
           pool.poolZYT(),
           pool.poolUSDT(),
           pool.peakPoolUSDT(),
+          pool.snapshotPoolUSDT(),
           pool.getTradePrice(), // 当日 08:01 快照锁定价（记账口径）
           pool.getStage(),
           pool.getCurrentSlippage(),
@@ -173,6 +180,7 @@ export function usePoolData() {
         poolStats.value = {
           poolZYT: formatEther(zytRes),
           poolUSDT: formatEther(usdtRes),
+          snapshotPoolUSDT: formatEther(snapU),
           peakPoolUSDT: formatEther(peak),
           price: formatEther(price),
           stage: Number(stage),

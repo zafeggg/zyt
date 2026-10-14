@@ -15,6 +15,7 @@ const MAP = [
   { src: "ZYTPoolManager.sol/ZYTPoolManager.json", out: "pool.ts", name: "POOL_ABI" },
   { src: "ZYTMining.sol/ZYTMining.json", out: "mining.ts", name: "MINING_ABI" },
   { src: "ZYTLiquidityCreator.sol/ZYTLiquidityCreator.json", out: "creator.ts", name: "CREATOR_ABI" },
+  { src: "ZYTSwap.sol/ZYTSwap.json", out: "swap.ts", name: "SWAP_ABI" },
   { src: "mocks/MockERC20.sol/MockERC20.json", out: "usdt.ts", name: "USDT_ABI" },
 ];
 
