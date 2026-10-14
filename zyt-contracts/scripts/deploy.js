@@ -213,9 +213,11 @@ async function main() {
   await zyt.setWhiteList(poolAddr, true);
   await zyt.setWhiteList(miningAddr, true);
   await zyt.setWhiteList(deflationAddr, true);
-  // 营销/技术地址豁免强制卖出（收到的滑点分成 ZYT 不受 4 期强卖约束）
+  // 营销/技术地址豁免强制卖出（收到的滑点分成 ZYT 不受卖币窗口强卖约束）
   await zyt.setWhiteList(market, true);
   await zyt.setWhiteList(technical, true);
+  // v9.2 红线第 1 条：Treasury（12 亿 ZYT 接收方）必须先入白名单，且必须先于 createInitialPool
+  await zyt.setWhiteList(treasury, true);
   console.log("ZYTToken wired.");
 
   // Pool：locker=Creator（锁仓 + 通缩报销唯一入口）
@@ -262,6 +264,30 @@ async function main() {
   await zyt.setWhiteList(pairAddr, true);
   console.log("Pair wired (config + token gate + pool).");
 
+  // ---------- 12b. v9.2 部署门禁自检（任一不符立即抛错） ----------
+  // 目的：防「链上实现落后于修复」（历史上真实发生过）与红线顺序颠倒。
+  const [supplyNow, poolZytNow, treasuryBal, fsMining, creatorTreasury, treasuryWl] = await Promise.all([
+    zyt.totalSupply(),
+    pool.poolZYT(),
+    zyt.balanceOf(treasury),
+    forceSell.mining(),
+    creator.treasury(),
+    zyt.isWhiteList(treasury),
+  ]);
+  const gate = [
+    ["总量 = 33 亿", supplyNow === TOTAL_ZYT],
+    ["底池 ZYT = 21 亿（初始价不变）", poolZytNow === POOL_ZYT],
+    ["Treasury 收到 12 亿 ZYT", treasuryBal === TOTAL_ZYT - POOL_ZYT],
+    ["Treasury 已在白名单（红线第 1 条）", treasuryWl],
+    ["ForceSell.mining 已接线（复投/迁移窗口复位前置）", fsMining === miningAddr],
+    ["Creator.treasury = 配置值", creatorTreasury === treasury],
+  ];
+  for (const [name, ok] of gate) {
+    console.log(`  [${ok ? "OK" : "FAIL"}] ${name}`);
+    if (!ok) throw new Error(`v9.2 部署门禁失败：${name}`);
+  }
+  console.log("v9.2 部署门禁自检通过。");
+
   // ---------- 13. 摘要 ----------
   const locked = await creator.lockedLiquidity();
   console.log("\n===== DEPLOYMENT SUMMARY (v9) =====");
@@ -286,7 +312,7 @@ async function main() {
   // 手抄地址易错（曾发生「链上实现落后于修复」的事故），统一由此文件作为唯一事实源。
   const deployBlock = await ethers.provider.getBlockNumber();
   const record = {
-    version: "v9.1",
+    version: "v9.2",
     network: hre.network.name,
     chainId: Number((await ethers.provider.getNetwork()).chainId),
     deployedAt: new Date().toISOString(),
@@ -307,7 +333,13 @@ async function main() {
       USDT: usdtAddr,
       "Pair(ZYT/USDT)": pairAddr,
     },
-    roles: { deployer: deployer.address, market, technical, keeper: process.env.KEEPER_ADDRESS || deployer.address },
+    roles: {
+      deployer: deployer.address,
+      market,
+      technical,
+      treasury, // v9.2：12 亿 ZYT 接收方（W3 营销 Safe）
+      keeper: process.env.KEEPER_ADDRESS || deployer.address,
+    },
     // verify 用构造参数（与上面部署语句一一对应，改部署语句时同步改这里）
     constructorArgs: {
       ZYTCompute: [],

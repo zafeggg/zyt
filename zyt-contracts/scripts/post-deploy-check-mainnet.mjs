@@ -111,6 +111,8 @@ const cfg = new Contract(
     "function deflationFloor() view returns (uint256)",
     "function transferSlippage() view returns (uint256)",
     "function dailyCompoundRate() view returns (uint256)",
+    "function accountDepositCap() view returns (uint256)",
+    "function depositStep() view returns (uint256)",
     "function setAddress(bytes32,address)",
   ],
   owner || p
@@ -152,7 +154,20 @@ const creator = new Contract(
   ["function lockedLiquidity() view returns (uint256)", "function poolManager() view returns (address)", "function pair() view returns (address)"],
   p
 );
-const forceSell = new Contract(C.ZYTForceSell, ["function keeper() view returns (address)", "function setKeeper(address)"], owner || p);
+const forceSell = new Contract(
+  C.ZYTForceSell,
+  [
+    "function keeper() view returns (address)",
+    "function setKeeper(address)",
+    // v9.2 卖币窗口（14/28 日历窗 + 档位）
+    "function mining() view returns (address)",
+    "function TIER_FIRST_BPS() view returns (uint256)",
+    "function TIER_STEP_BPS() view returns (uint256)",
+    "function TIER_AFTER60_BPS() view returns (uint256)",
+    "function currentWindow() view returns (uint256, bool)",
+  ],
+  owner || p
+);
 const usdt = new Contract(C.USDT, ["function symbol() view returns (string)", "function decimals() view returns (uint8)", "function balanceOf(address) view returns (uint256)"], p);
 
 console.log("=== 1. 角色接线 ===");
@@ -215,7 +230,8 @@ const [pz, pu, price, stage, slip, gate, lpBurned, divPool, locked, pmInCreator]
   creator.poolManager(),
 ]);
 checkNum("池 USDT = 初始底池", pu, rec.seed?.usdt || "21000", true);
-checkNum("池 ZYT = 初始底池", pz, rec.seed?.zyt || "2100000000", true);
+// v9.2：底池 ZYT 仍为 21 亿（全量 33 亿中的组池部分，余额 12 亿转 Treasury）
+checkNum("池 ZYT = 初始底池", pz, rec.seed?.zytPool || "2100000000", true);
 info("价格", `${formatEther(price)} U`);
 info("阶段", `${stage}（1=只卖 / 2=买额 1:1 / 3=自由）`);
 info("滑点", `${slip} bps`);
@@ -224,10 +240,10 @@ check("LP 已锁仓 > 0", locked > 0n, true);
 check("Creator.poolManager = Pool", pmInCreator, C.ZYTPoolManager);
 info("累计销毁 LP", formatEther(lpBurned));
 info("分红池 ZYT", formatEther(divPool));
-check("总供应 ≤ 21 亿", supply <= 2100000000000000000000000000n, true);
+check("总供应 ≤ 33 亿", supply <= 33n * 10n ** 26n, true);
 
 console.log("\n=== 4. 参数核对（运营口径）===");
-const [maxSupply, minDep, maxDep, s1, s2, powerRate, dynMul, buyRate, poolRate, staticMul, deflRate, deflFloor, xferSlip, compRate] =
+const [maxSupply, minDep, maxDep, s1, s2, powerRate, dynMul, buyRate, poolRate, staticMul, deflRate, deflFloor, xferSlip, compRate, accCap, dStep] =
   await Promise.all([
     cfg.zytMaxSupply(),
     cfg.minDeposit(),
@@ -243,8 +259,12 @@ const [maxSupply, minDep, maxDep, s1, s2, powerRate, dynMul, buyRate, poolRate, 
     cfg.deflationFloor(),
     cfg.transferSlippage(),
     cfg.dailyCompoundRate(),
+    cfg.accountDepositCap(),
+    cfg.depositStep(),
   ]);
-checkNum("zytMaxSupply", maxSupply, "2100000000");
+checkNum("zytMaxSupply（33 亿）", maxSupply, "3300000000");
+checkNum("accountDepositCap（单钱包累计入金上限）", accCap, "500");
+checkNum("depositStep（入金 100U 倍数步长）", dStep, "100");
 checkNum("minDeposit", minDep, "100");
 checkNum("maxDeposit", maxDep, "500");
 info("poolStage1USDT", `${formatEther(s1)} U（主网正式口径应为 10000000）`);
@@ -258,6 +278,36 @@ check("deflationRate（2%）", deflRate, 200n);
 checkNum("deflationFloor（500 万）", deflFloor, "5000000");
 check("transferSlippage（10%）", xferSlip, 1000n);
 check("dailyCompoundRate（1%）", compRate, 100n);
+
+console.log("\n=== 4b. v9.2 子项核对（卖币窗口 / 补池 / Treasury）===");
+const ZERO_ADDR = "0x0000000000000000000000000000000000000000";
+const [fsMining, tier1, tier2, tier3, curWin] = await Promise.all([
+  forceSell.mining(),
+  forceSell.TIER_FIRST_BPS(),
+  forceSell.TIER_STEP_BPS(),
+  forceSell.TIER_AFTER60_BPS(),
+  forceSell.currentWindow(),
+]);
+// 复投与迁移回填都依赖 ForceSell.resetWindow，mining 未接线会导致 deposit 直接 revert
+check("ForceSell.mining = Mining（窗口复位前置）", fsMining, C.ZYTMining);
+check("ForceSell.keeper 已设置（15/29 凌晨结算方）", fsKeeper !== ZERO_ADDR, true);
+check("档位常量 20% / 10% / 2%", tier1 === 2000n && tier2 === 1000n && tier3 === 200n, true);
+info("当前卖币窗口", curWin[1] ? `${curWin[0]}（今日为卖币日）` : "今日非卖币日（窗口外禁卖）");
+
+const creatorTreasury = await new Contract(
+  C.ZYTLiquidityCreator,
+  ["function treasury() view returns (address)"],
+  p
+).treasury();
+const treasuryAddr = rec.roles?.treasury;
+if (treasuryAddr) {
+  const [twl, tbal] = await Promise.all([zyt.isWhiteList(treasuryAddr), zyt.balanceOf(treasuryAddr)]);
+  check("Treasury 已在 ZYTToken 白名单（红线第 1 条）", twl, true);
+  info("Treasury ZYT 余额", formatEther(tbal));
+  check("Creator.treasury = 记录值", creatorTreasury, treasuryAddr);
+} else {
+  info("Treasury", "部署记录未含 roles.treasury（旧记录或未部署新版）");
+}
 
 console.log("\n=== 5. USDT 与门控 ===");
 const [symbol, decimals, bal] = await Promise.all([usdt.symbol(), usdt.decimals(), usdt.balanceOf(roles.deployer)]);

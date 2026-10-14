@@ -625,4 +625,51 @@ describe("ZYT v9", function () {
     expect(await pool.totalZytInjected()).to.equal(amount);
     expect(await zyt.balanceOf(root.address)).to.equal(rootBefore - amount);
   });
+
+  it("14. v9.2 迁移接口：setUserData 批量回填（含分红游标）+ launchDay 继承 + 窗口重置首期", async function () {
+    const empty = [0n, 0n, 0n, 0n, 0n, 0n, 0n, 0n, 0n, 0n, 0n, 0n, false, false];
+    // 权限闭合
+    await expect(mining.connect(alice).setUserData([alice.address], [empty]))
+      .to.be.revertedWith("Mining: not owner");
+    await expect(mining.connect(alice).setLaunchDay(1n)).to.be.revertedWith("Mining: not owner");
+    // 入参校验
+    await expect(mining.setUserData([alice.address], [])).to.be.revertedWith("Mining: length mismatch");
+    await expect(mining.setUserData([ethers.ZeroAddress], [empty])).to.be.revertedWith("Mining: zero user");
+
+    // 构造真实存量状态：bob 入金 + 买币 + 完成首卖（首期结束、有分红游标）
+    await gotoWindow();
+    await depositOf(bob, U500, ethers.ZeroAddress);
+    await config.setUint("poolStage1USDT", 21000n * E18);
+    await config.setUint("poolStage2USDT", 10_000_000n * E18);
+    await usdt.connect(bob).faucet(U500);
+    await usdt.connect(bob).approve(await mining.getAddress(), U500);
+    await mining.connect(bob).buy(U500);
+    const bal = await zyt.balanceOf(bob.address);
+    await zyt.connect(bob).approve(await pool.getAddress(), bal);
+    await mining.connect(bob).sellZyt(bal * 2000n / 10000n);
+    expect(await forceSell.firstSellDone(bob.address)).to.equal(true);
+
+    const u = await mining.users(bob.address);
+    const cursor = (await mining.dividendOf(bob.address))[1];
+    // migrate.mjs 的元组顺序：11 个 uint（跳过 isExited）+ dividendClaimedDay + 2 bool
+    const tuple = [u[0], u[1], u[2], u[3], u[4], u[6], u[7], u[8], u[9], u[10], u[11], cursor, u[5], u[12]];
+    await mining.setUserData([bob.address], [tuple]);
+
+    // 逐字段等价（含分红游标）
+    const after = await mining.users(bob.address);
+    for (const i of [0, 1, 2, 3, 4, 6, 7, 8, 9, 10, 11]) expect(after[i]).to.equal(u[i]);
+    expect(after[5]).to.equal(u[5]);
+    expect(after[12]).to.equal(u[12]);
+    expect((await mining.dividendOf(bob.address))[1]).to.equal(cursor);
+
+    // 拍板第 4 项：老用户卖出窗口迁移日重置为首期 20%
+    expect(await forceSell.firstSellDone(bob.address)).to.equal(false);
+    expect((await forceSell.windows(bob.address))[0]).to.equal(0n);
+
+    // launchDay 继承（红线第 4 条；须能写入任意旧值，且拒绝 0）
+    const oldDay = await mining.launchDay();
+    await mining.setLaunchDay(oldDay - 3n);
+    expect(await mining.launchDay()).to.equal(oldDay - 3n);
+    await expect(mining.setLaunchDay(0n)).to.be.revertedWith("Mining: zero day");
+  });
 });
