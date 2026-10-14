@@ -25,13 +25,15 @@
       <div v-else-if="stageBlocked" class="stage-tip">{{ $t("home.stage1ConvertTip") }}</div>
     </div>
 
-    <!-- #7 强制卖出进度（keeper API 数据） -->
+    <!-- v9.2 卖币窗口进度（keeper API 数据；每月 14/28 日历窗 + 档位额度） -->
     <div v-if="forceSell && forceSell.status === 'ok'" class="fs-body">
       <div class="fs-title">
         <span>{{ $t("home.forceSellTitle") }}</span>
-        <span class="fs-window" :class="{ risk: forceSell.atRisk }">
-          {{ forceSell.currentWindow === 0 ? $t("home.forceSellWindow0") : $t("home.forceSellWindow", { n: forceSell.currentWindow }) }}
-        </span>
+        <span class="fs-window" :class="{ risk: forceSell.atRisk }">{{ phaseText }}</span>
+      </div>
+      <!-- 卖币日前 3 天强提醒 -->
+      <div v-if="showAdvance" class="fs-reminder">
+        {{ $t("home.forceSellAdvance", { n: forceSell.daysUntilNext }) }}
       </div>
       <div class="fs-bar">
         <div
@@ -42,13 +44,13 @@
       </div>
       <div class="fs-meta">
         <span>{{ $t("home.forceSellSold", { n: fmtZyt(forceSell.soldAmount) }) }}</span>
-        <span>{{ $t("home.forceSellRequired", { n: fmtZyt(forceSell.requiredSell) }) }}</span>
+        <span>{{ $t("home.forceSellQuota", { n: fmtZyt(forceSell.quota) }) }}</span>
       </div>
-      <!-- v13b：差额 / 截止时间 / 计算基数（报告 P1 信息补全） -->
-      <div v-if="diffWei > 0n" class="fs-diff">
-        {{ $t("home.forceSellDiff", { n: fmtZyt(diffWei.toString()) }) }}
+      <div v-if="deficitWei > 0n" class="fs-diff">
+        {{ $t("home.forceSellDiff", { n: fmtZyt(deficitWei.toString()) }) }}
       </div>
       <div class="fs-meta fs-sub">
+        <span>{{ $t("home.forceSellTier", { n: tierPct }) }}</span>
         <span>{{ $t("home.forceSellDeadline") }}: {{ fmtDeadline(forceSell) }}</span>
       </div>
       <div class="fs-note">{{ $t("home.forceSellBase") }}</div>
@@ -61,6 +63,7 @@
 
 <script setup lang="ts">
 import { computed } from "vue";
+import { useI18n } from "vue-i18n";
 import { formatEther } from "ethers";
 import type { KeeperForceSell } from "../composables/useKeeperApi";
 
@@ -81,6 +84,8 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{ (e: "reinvest"): void }>();
+
+const { t } = useI18n();
 
 const leftNum = computed(() => parseFloat(props.buyQuotaLeft) || 0);
 const totalNum = computed(() => parseFloat(props.depositTotal) || 0);
@@ -107,36 +112,55 @@ function fmtZyt(wei: string): string {
   }
 }
 
-// v13b：待卖差额（应卖 - 已卖，wei）
-const diffWei = computed(() => {
-  if (!props.forceSell) return 0n;
+/** v9.2：阶段文案（open=今日卖币日 / pending=今日结算中 / idle=非卖币日） */
+const phaseText = computed(() => {
+  const p = props.forceSell?.phase;
+  if (p === "open") return t("home.forceSellPhaseOpen");
+  if (p === "pending") return t("home.forceSellPhasePending");
+  return t("home.forceSellPhaseIdle");
+});
+
+/** 卖币日前 3 天强提醒：非卖币日且距下一次卖币日 1~3 天 */
+const showAdvance = computed(() => {
+  const fs = props.forceSell;
+  if (!fs || fs.phase !== "idle") return false;
+  const d = Number(fs.daysUntilNext ?? -1);
+  return d >= 1 && d <= 3;
+});
+
+/** 当期欠额（v9.2 后端直出 deficit；兼容旧后端时回退 quota − soldAmount） */
+const deficitWei = computed(() => {
+  const fs = props.forceSell;
+  if (!fs) return 0n;
   try {
-    const req = BigInt(props.forceSell.requiredSell || "0");
-    const sold = BigInt(props.forceSell.soldAmount || "0");
+    if (fs.deficit !== undefined) return BigInt(fs.deficit || "0");
+    const req = BigInt(fs.quota || fs.requiredSell || "0");
+    const sold = BigInt(fs.soldAmount || "0");
     return req > sold ? req - sold : 0n;
   } catch {
     return 0n;
   }
 });
 
+/** 档位展示（bps → %）：2000→20%、1000→10%、200→2% */
+const tierPct = computed(() => `${Number(props.forceSell?.tierBps ?? 0) / 100}%`);
+
+function fmtTs(sec: number): string {
+  const d = new Date(sec * 1000);
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
 /** 截止时间显示
- *  v21 修复：keeper 的 deadlineSec 是「剩余秒数」（相对时长），此前被当 unix 时间戳格式化
- *  → 显示成 1970-01-14。现优先用 windowEndAt（绝对时间戳 = 首次收币 + 窗口数×15天）；
- *    0 表示无截止（未初始化或 4 期已结束），显示 "-"。
+ *  v21 教训保留：deadlineSec 是「剩余秒数」，windowEndAt 才是「绝对时间戳」，二者不可混用。
+ *  v9.2：卖币日窗口结束（open/pending）显示窗口截止；非卖币日显示下一次窗口时间。
  */
-function fmtDeadline(forceSell: { windowEndAt?: number; deadlineSec?: number }): string {
-  const abs = Number(forceSell.windowEndAt || 0);
-  if (abs > 0) {
-    const d = new Date(abs * 1000);
-    const p = (n: number) => String(n).padStart(2, "0");
-    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
-  }
-  // 兼容旧后端：把剩余秒格式化为「X 天 X 小时」
-  const remain = Number(forceSell.deadlineSec || 0);
-  if (!remain) return "-";
-  const days = Math.floor(remain / 86400);
-  const hours = Math.floor((remain % 86400) / 3600);
-  return days > 0 ? `${days} 天 ${hours} 小时` : `${hours} 小时`;
+function fmtDeadline(fs: KeeperForceSell): string {
+  const abs = Number(fs.windowEndAt || 0);
+  if (abs > 0) return fmtTs(abs);
+  const next = Number(fs.nextWindowAt || 0);
+  if (next > 0) return fmtTs(next);
+  return "-";
 }
 </script>
 
@@ -250,6 +274,17 @@ function fmtDeadline(forceSell: { windowEndAt?: number; deadlineSec?: number }):
       font-size: 11px;
       color: #f47a77;
       font-weight: 600;
+    }
+    // v9.2：卖币日前 3 天强提醒
+    .fs-reminder {
+      margin-top: 8px;
+      padding: 6px 8px;
+      border-radius: var(--radius-sm);
+      background: rgba(245, 193, 93, 0.12);
+      border: 1px solid rgba(245, 193, 93, 0.35);
+      color: var(--gold);
+      font-size: 11px;
+      line-height: 1.5;
     }
     .fs-note {
       margin-top: 6px;

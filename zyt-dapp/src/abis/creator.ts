@@ -162,6 +162,38 @@ export const CREATOR_ABI = [
   "type": "event"
  },
  {
+  "anonymous": false,
+  "inputs": [
+   {
+    "indexed": true,
+    "internalType": "address",
+    "name": "treasury",
+    "type": "address"
+   }
+  ],
+  "name": "TreasuryChanged",
+  "type": "event"
+ },
+ {
+  "anonymous": false,
+  "inputs": [
+   {
+    "indexed": true,
+    "internalType": "address",
+    "name": "treasury",
+    "type": "address"
+   },
+   {
+    "indexed": false,
+    "internalType": "uint256",
+    "name": "amount",
+    "type": "uint256"
+   }
+  ],
+  "name": "TreasurySeeded",
+  "type": "event"
+ },
+ {
   "inputs": [],
   "name": "blackHole",
   "outputs": [
@@ -178,7 +210,12 @@ export const CREATOR_ABI = [
   "inputs": [
    {
     "internalType": "uint256",
-    "name": "zytAmount",
+    "name": "totalZyt",
+    "type": "uint256"
+   },
+   {
+    "internalType": "uint256",
+    "name": "poolZyt",
     "type": "uint256"
    },
    {
@@ -318,6 +355,19 @@ export const CREATOR_ABI = [
  {
   "inputs": [
    {
+    "internalType": "address",
+    "name": "_treasury",
+    "type": "address"
+   }
+  ],
+  "name": "setTreasury",
+  "outputs": [],
+  "stateMutability": "nonpayable",
+  "type": "function"
+ },
+ {
+  "inputs": [
+   {
     "internalType": "uint256",
     "name": "rateBps",
     "type": "uint256"
@@ -415,6 +465,19 @@ export const CREATOR_ABI = [
   "name": "transferOwnership",
   "outputs": [],
   "stateMutability": "nonpayable",
+  "type": "function"
+ },
+ {
+  "inputs": [],
+  "name": "treasury",
+  "outputs": [
+   {
+    "internalType": "address",
+    "name": "",
+    "type": "address"
+   }
+  ],
+  "stateMutability": "view",
   "type": "function"
  },
  {

@@ -185,6 +185,19 @@ export const MINING_ABI = [
   "anonymous": false,
   "inputs": [
    {
+    "indexed": false,
+    "internalType": "uint256",
+    "name": "day",
+    "type": "uint256"
+   }
+  ],
+  "name": "LaunchDaySet",
+  "type": "event"
+ },
+ {
+  "anonymous": false,
+  "inputs": [
+   {
     "indexed": true,
     "internalType": "address",
     "name": "receiver",
@@ -279,6 +292,19 @@ export const MINING_ABI = [
    }
   ],
   "name": "TransferLedger",
+  "type": "event"
+ },
+ {
+  "anonymous": false,
+  "inputs": [
+   {
+    "indexed": true,
+    "internalType": "address",
+    "name": "user",
+    "type": "address"
+   }
+  ],
+  "name": "UserDataMigrated",
   "type": "event"
  },
  {
@@ -457,6 +483,19 @@ export const MINING_ABI = [
  },
  {
   "inputs": [],
+  "name": "launchDay",
+  "outputs": [
+   {
+    "internalType": "uint64",
+    "name": "",
+    "type": "uint64"
+   }
+  ],
+  "stateMutability": "view",
+  "type": "function"
+ },
+ {
+  "inputs": [],
   "name": "pool",
   "outputs": [
    {
@@ -557,6 +596,30 @@ export const MINING_ABI = [
  {
   "inputs": [
    {
+    "internalType": "address",
+    "name": "user",
+    "type": "address"
+   }
+  ],
+  "name": "sellTierInputs",
+  "outputs": [
+   {
+    "internalType": "uint256",
+    "name": "depositTotal",
+    "type": "uint256"
+   },
+   {
+    "internalType": "uint256",
+    "name": "withdrawTotal",
+    "type": "uint256"
+   }
+  ],
+  "stateMutability": "view",
+  "type": "function"
+ },
+ {
+  "inputs": [
+   {
     "internalType": "uint256",
     "name": "zytGross",
     "type": "uint256"
@@ -576,6 +639,109 @@ export const MINING_ABI = [
    }
   ],
   "name": "setDeflation",
+  "outputs": [],
+  "stateMutability": "nonpayable",
+  "type": "function"
+ },
+ {
+  "inputs": [
+   {
+    "internalType": "uint256",
+    "name": "day",
+    "type": "uint256"
+   }
+  ],
+  "name": "setLaunchDay",
+  "outputs": [],
+  "stateMutability": "nonpayable",
+  "type": "function"
+ },
+ {
+  "inputs": [
+   {
+    "internalType": "address[]",
+    "name": "users_",
+    "type": "address[]"
+   },
+   {
+    "components": [
+     {
+      "internalType": "uint256",
+      "name": "depositTotal",
+      "type": "uint256"
+     },
+     {
+      "internalType": "uint256",
+      "name": "withdrawTotal",
+      "type": "uint256"
+     },
+     {
+      "internalType": "uint256",
+      "name": "powerBase",
+      "type": "uint256"
+     },
+     {
+      "internalType": "uint256",
+      "name": "powerDay",
+      "type": "uint256"
+     },
+     {
+      "internalType": "uint256",
+      "name": "pendingDividend",
+      "type": "uint256"
+     },
+     {
+      "internalType": "uint256",
+      "name": "receivedValue",
+      "type": "uint256"
+     },
+     {
+      "internalType": "uint256",
+      "name": "exitDay",
+      "type": "uint256"
+     },
+     {
+      "internalType": "uint256",
+      "name": "buyQuota",
+      "type": "uint256"
+     },
+     {
+      "internalType": "uint256",
+      "name": "buyUsed",
+      "type": "uint256"
+     },
+     {
+      "internalType": "uint256",
+      "name": "dynamicQuota",
+      "type": "uint256"
+     },
+     {
+      "internalType": "uint256",
+      "name": "dynamicWithdrawn",
+      "type": "uint256"
+     },
+     {
+      "internalType": "uint256",
+      "name": "dividendClaimedDay",
+      "type": "uint256"
+     },
+     {
+      "internalType": "bool",
+      "name": "isExited",
+      "type": "bool"
+     },
+     {
+      "internalType": "bool",
+      "name": "dynamicExited",
+      "type": "bool"
+     }
+    ],
+    "internalType": "struct ZYTMining.MigrateUserData[]",
+    "name": "data",
+    "type": "tuple[]"
+   }
+  ],
+  "name": "setUserData",
   "outputs": [],
   "stateMutability": "nonpayable",
   "type": "function"

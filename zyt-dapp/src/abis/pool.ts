@@ -244,6 +244,63 @@ export const POOL_ABI = [
   "type": "event"
  },
  {
+  "anonymous": false,
+  "inputs": [
+   {
+    "indexed": true,
+    "internalType": "address",
+    "name": "treasury",
+    "type": "address"
+   }
+  ],
+  "name": "TreasurySet",
+  "type": "event"
+ },
+ {
+  "anonymous": false,
+  "inputs": [
+   {
+    "indexed": true,
+    "internalType": "address",
+    "name": "from",
+    "type": "address"
+   },
+   {
+    "indexed": false,
+    "internalType": "uint256",
+    "name": "amount",
+    "type": "uint256"
+   },
+   {
+    "indexed": false,
+    "internalType": "uint256",
+    "name": "poolZytAfter",
+    "type": "uint256"
+   },
+   {
+    "indexed": false,
+    "internalType": "uint256",
+    "name": "totalInjected",
+    "type": "uint256"
+   }
+  ],
+  "name": "ZytInjected",
+  "type": "event"
+ },
+ {
+  "inputs": [],
+  "name": "INJECT_CAP_BPS",
+  "outputs": [
+   {
+    "internalType": "uint256",
+    "name": "",
+    "type": "uint256"
+   }
+  ],
+  "stateMutability": "view",
+  "type": "function"
+ },
+ {
   "inputs": [
    {
     "internalType": "uint256",
@@ -420,6 +477,25 @@ export const POOL_ABI = [
    {
     "internalType": "uint256",
     "name": "lpBurned",
+    "type": "uint256"
+   }
+  ],
+  "stateMutability": "nonpayable",
+  "type": "function"
+ },
+ {
+  "inputs": [
+   {
+    "internalType": "uint256",
+    "name": "amount",
+    "type": "uint256"
+   }
+  ],
+  "name": "injectZyt",
+  "outputs": [
+   {
+    "internalType": "uint256",
+    "name": "",
     "type": "uint256"
    }
   ],
@@ -645,6 +721,19 @@ export const POOL_ABI = [
   "type": "function"
  },
  {
+  "inputs": [
+   {
+    "internalType": "address",
+    "name": "_treasury",
+    "type": "address"
+   }
+  ],
+  "name": "setTreasury",
+  "outputs": [],
+  "stateMutability": "nonpayable",
+  "type": "function"
+ },
+ {
   "inputs": [],
   "name": "snapshotPoolUSDT",
   "outputs": [
@@ -697,6 +786,19 @@ export const POOL_ABI = [
   "type": "function"
  },
  {
+  "inputs": [],
+  "name": "totalZytInjected",
+  "outputs": [
+   {
+    "internalType": "uint256",
+    "name": "",
+    "type": "uint256"
+   }
+  ],
+  "stateMutability": "view",
+  "type": "function"
+ },
+ {
   "inputs": [
    {
     "internalType": "address",
@@ -707,6 +809,19 @@ export const POOL_ABI = [
   "name": "transferOwnership",
   "outputs": [],
   "stateMutability": "nonpayable",
+  "type": "function"
+ },
+ {
+  "inputs": [],
+  "name": "treasury",
+  "outputs": [
+   {
+    "internalType": "address",
+    "name": "",
+    "type": "address"
+   }
+  ],
+  "stateMutability": "view",
   "type": "function"
  },
  {

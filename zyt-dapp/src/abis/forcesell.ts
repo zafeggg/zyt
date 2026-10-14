@@ -111,14 +111,89 @@ export const FORCESELL_ABI = [
     "internalType": "uint256",
     "name": "window",
     "type": "uint256"
+   },
+   {
+    "indexed": false,
+    "internalType": "uint256",
+    "name": "quota",
+    "type": "uint256"
+   },
+   {
+    "indexed": false,
+    "internalType": "uint256",
+    "name": "tierBps",
+    "type": "uint256"
+   }
+  ],
+  "name": "WindowOpened",
+  "type": "event"
+ },
+ {
+  "anonymous": false,
+  "inputs": [
+   {
+    "indexed": true,
+    "internalType": "address",
+    "name": "user",
+    "type": "address"
+   }
+  ],
+  "name": "WindowReset",
+  "type": "event"
+ },
+ {
+  "anonymous": false,
+  "inputs": [
+   {
+    "indexed": true,
+    "internalType": "address",
+    "name": "user",
+    "type": "address"
+   },
+   {
+    "indexed": false,
+    "internalType": "uint256",
+    "name": "window",
+    "type": "uint256"
    }
   ],
   "name": "WindowSettled",
   "type": "event"
  },
  {
+  "anonymous": false,
+  "inputs": [
+   {
+    "indexed": true,
+    "internalType": "address",
+    "name": "user",
+    "type": "address"
+   },
+   {
+    "indexed": false,
+    "internalType": "uint256",
+    "name": "window",
+    "type": "uint256"
+   },
+   {
+    "indexed": false,
+    "internalType": "uint256",
+    "name": "amount",
+    "type": "uint256"
+   },
+   {
+    "indexed": false,
+    "internalType": "uint256",
+    "name": "sold",
+    "type": "uint256"
+   }
+  ],
+  "name": "WindowSold",
+  "type": "event"
+ },
+ {
   "inputs": [],
-  "name": "TOTAL_WINDOWS",
+  "name": "TIER60_BPS",
   "outputs": [
    {
     "internalType": "uint256",
@@ -131,7 +206,7 @@ export const FORCESELL_ABI = [
  },
  {
   "inputs": [],
-  "name": "WINDOW",
+  "name": "TIER_AFTER60_BPS",
   "outputs": [
    {
     "internalType": "uint256",
@@ -144,7 +219,7 @@ export const FORCESELL_ABI = [
  },
  {
   "inputs": [],
-  "name": "WINDOW1_TARGET",
+  "name": "TIER_FIRST_BPS",
   "outputs": [
    {
     "internalType": "uint256",
@@ -157,33 +232,7 @@ export const FORCESELL_ABI = [
  },
  {
   "inputs": [],
-  "name": "WINDOW2_TARGET",
-  "outputs": [
-   {
-    "internalType": "uint256",
-    "name": "",
-    "type": "uint256"
-   }
-  ],
-  "stateMutability": "view",
-  "type": "function"
- },
- {
-  "inputs": [],
-  "name": "WINDOW3_TARGET",
-  "outputs": [
-   {
-    "internalType": "uint256",
-    "name": "",
-    "type": "uint256"
-   }
-  ],
-  "stateMutability": "view",
-  "type": "function"
- },
- {
-  "inputs": [],
-  "name": "WINDOW4_TARGET",
+  "name": "TIER_STEP_BPS",
   "outputs": [
    {
     "internalType": "uint256",
@@ -216,11 +265,29 @@ export const FORCESELL_ABI = [
   "outputs": [
    {
     "internalType": "uint256",
-    "name": "",
+    "name": "burned",
     "type": "uint256"
    }
   ],
   "stateMutability": "nonpayable",
+  "type": "function"
+ },
+ {
+  "inputs": [],
+  "name": "currentWindow",
+  "outputs": [
+   {
+    "internalType": "uint256",
+    "name": "windowId",
+    "type": "uint256"
+   },
+   {
+    "internalType": "bool",
+    "name": "open",
+    "type": "bool"
+   }
+  ],
+  "stateMutability": "view",
   "type": "function"
  },
  {
@@ -237,6 +304,25 @@ export const FORCESELL_ABI = [
     "internalType": "uint256",
     "name": "",
     "type": "uint256"
+   }
+  ],
+  "stateMutability": "view",
+  "type": "function"
+ },
+ {
+  "inputs": [
+   {
+    "internalType": "address",
+    "name": "",
+    "type": "address"
+   }
+  ],
+  "name": "firstSellDone",
+  "outputs": [
+   {
+    "internalType": "bool",
+    "name": "",
+    "type": "bool"
    }
   ],
   "stateMutability": "view",
@@ -275,6 +361,19 @@ export const FORCESELL_ABI = [
   "type": "function"
  },
  {
+  "inputs": [],
+  "name": "mining",
+  "outputs": [
+   {
+    "internalType": "address",
+    "name": "",
+    "type": "address"
+   }
+  ],
+  "stateMutability": "view",
+  "type": "function"
+ },
+ {
   "inputs": [
    {
     "internalType": "address",
@@ -283,7 +382,7 @@ export const FORCESELL_ABI = [
    },
    {
     "internalType": "uint256",
-    "name": "amount",
+    "name": "",
     "type": "uint256"
    }
   ],
@@ -307,7 +406,33 @@ export const FORCESELL_ABI = [
  },
  {
   "inputs": [],
+  "name": "pendingSettleWindow",
+  "outputs": [
+   {
+    "internalType": "uint256",
+    "name": "",
+    "type": "uint256"
+   }
+  ],
+  "stateMutability": "view",
+  "type": "function"
+ },
+ {
+  "inputs": [],
   "name": "renounceOwnership",
+  "outputs": [],
+  "stateMutability": "nonpayable",
+  "type": "function"
+ },
+ {
+  "inputs": [
+   {
+    "internalType": "address",
+    "name": "user",
+    "type": "address"
+   }
+  ],
+  "name": "resetWindow",
   "outputs": [],
   "stateMutability": "nonpayable",
   "type": "function"
@@ -321,6 +446,19 @@ export const FORCESELL_ABI = [
    }
   ],
   "name": "setKeeper",
+  "outputs": [],
+  "stateMutability": "nonpayable",
+  "type": "function"
+ },
+ {
+  "inputs": [
+   {
+    "internalType": "address",
+    "name": "_mining",
+    "type": "address"
+   }
+  ],
+  "name": "setMining",
   "outputs": [],
   "stateMutability": "nonpayable",
   "type": "function"
@@ -348,30 +486,11 @@ export const FORCESELL_ABI = [
   "inputs": [
    {
     "internalType": "address",
-    "name": "",
+    "name": "user",
     "type": "address"
    }
   ],
-  "name": "settledWindows",
-  "outputs": [
-   {
-    "internalType": "uint256",
-    "name": "",
-    "type": "uint256"
-   }
-  ],
-  "stateMutability": "view",
-  "type": "function"
- },
- {
-  "inputs": [
-   {
-    "internalType": "address",
-    "name": "",
-    "type": "address"
-   }
-  ],
-  "name": "soldAmount",
+  "name": "tierBpsOf",
   "outputs": [
    {
     "internalType": "uint256",
@@ -406,6 +525,59 @@ export const FORCESELL_ABI = [
   "name": "transferOwnership",
   "outputs": [],
   "stateMutability": "nonpayable",
+  "type": "function"
+ },
+ {
+  "inputs": [
+   {
+    "internalType": "address",
+    "name": "",
+    "type": "address"
+   },
+   {
+    "internalType": "uint256",
+    "name": "",
+    "type": "uint256"
+   }
+  ],
+  "name": "windowSettled",
+  "outputs": [
+   {
+    "internalType": "bool",
+    "name": "",
+    "type": "bool"
+   }
+  ],
+  "stateMutability": "view",
+  "type": "function"
+ },
+ {
+  "inputs": [
+   {
+    "internalType": "address",
+    "name": "",
+    "type": "address"
+   }
+  ],
+  "name": "windows",
+  "outputs": [
+   {
+    "internalType": "uint256",
+    "name": "windowId",
+    "type": "uint256"
+   },
+   {
+    "internalType": "uint256",
+    "name": "quota",
+    "type": "uint256"
+   },
+   {
+    "internalType": "uint256",
+    "name": "sold",
+    "type": "uint256"
+   }
+  ],
+  "stateMutability": "view",
   "type": "function"
  }
 ];

@@ -113,6 +113,19 @@ export const CONFIG_ABI = [
  },
  {
   "inputs": [],
+  "name": "accountDepositCap",
+  "outputs": [
+   {
+    "internalType": "uint256",
+    "name": "",
+    "type": "uint256"
+   }
+  ],
+  "stateMutability": "view",
+  "type": "function"
+ },
+ {
+  "inputs": [],
   "name": "baseSlippage",
   "outputs": [
    {
@@ -218,6 +231,19 @@ export const CONFIG_ABI = [
  {
   "inputs": [],
   "name": "deflationRate",
+  "outputs": [
+   {
+    "internalType": "uint256",
+    "name": "",
+    "type": "uint256"
+   }
+  ],
+  "stateMutability": "view",
+  "type": "function"
+ },
+ {
+  "inputs": [],
+  "name": "depositStep",
   "outputs": [
    {
     "internalType": "uint256",

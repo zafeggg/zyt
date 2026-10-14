@@ -82,16 +82,36 @@ export interface KeeperDividend {
 export interface KeeperForceSell {
   address: string;
   status: string;
-  firstReceiveAt: number;
-  currentWindow: number;
-  cumTargetPct: number;
-  requiredSell: string;  soldAmount: string;
+  /** v9.2 卖币窗口（每月 14/28 日全天，北京时间） */
+  phase: "open" | "pending" | "idle";
+  /** 评估窗口 id（0 = 非卖币日） */
+  windowId: number;
+  /** 窗口截止（绝对 unix 时间戳，秒；0 = 无） */
+  windowEndAt: number;
+  /** 距窗口截止的剩余秒数 */
+  deadlineSec: number;
+  nextWindowId: number;
+  nextWindowAt: number;
+  /** 距下一次卖币日的天数（前端「卖币日前 3 天强提醒」依据） */
+  daysUntilNext: number;
+  /** 当期档位（bps）：2000 首期 / 1000 常规 / 200 累计达入金 60% 后 */
+  tierBps: number;
+  /** 当期额度（ZYT wei） */
+  quota: string;
+  /** 当期已卖（含转账视同卖出，ZYT wei） */
+  soldAmount: string;
+  /** 当期欠额（未卖足部分，将在窗口结束后的次日凌晨被销毁） */
+  deficit: string;
   balance: string;
   sellCount: number;
+  totalSell: string;
   atRisk: boolean;
   progressPct: number;
-  deadlineSec: number;
   updatedAt: number;
+  // ---- 兼容 v9.1 及以前后端（灰度期字段缺失时为 undefined） ----
+  currentWindow?: number;
+  requiredSell?: string;
+  firstReceiveAt?: number;
 }
 
 export interface KeeperRecord {
