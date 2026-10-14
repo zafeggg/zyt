@@ -112,6 +112,7 @@ describe("ZYT v9.1 漏洞检测", function () {
     await creator.setPoolManager(await pool.getAddress());
     await mining.setDeflation(await deflation.getAddress());
     await forceSell.setKeeper(keeper.address);
+    await forceSell.setMining(await mining.getAddress()); // v9.2：窗口复位授权（复投 / 迁移）
 
     await usdt.faucet(SEED_USDT * 100n);
     await usdt.approve(await creator.getAddress(), SEED_USDT);

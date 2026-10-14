@@ -66,6 +66,8 @@ contract ZYTMining is ReentrancyGuard {
     event Claimed(address indexed user, uint256 amount);
     event TransferLedger(address indexed user, uint256 zytAmount, uint256 usdtValue, bool isOut);
     event RefPaid(address indexed receiver, uint256 usdtAmount, uint256 level);
+    event UserDataMigrated(address indexed user);
+    event LaunchDaySet(uint256 day);
 
     modifier whenNotPaused() {
         require(!config.paused(), "Mining: paused");
@@ -102,7 +104,17 @@ contract ZYTMining is ReentrancyGuard {
      *      60% 转 PoolManager 真实组 LP 凭证销毁；入金者获算力 + 买额（1:1）+ 动态额度（×5）
      */
     function deposit(uint256 usdtAmount, address ref) external nonReentrant whenNotPaused {
+        // v9.2 入金规则终版（2026-10-13 拍板）：金额须为 depositStep（100U）的倍数
+        uint256 step = config.depositStep();
         require(usdtAmount >= config.minDeposit() && usdtAmount <= config.maxDeposit(), "Mining: amount range");
+        require(step > 0 && usdtAmount % step == 0, "Mining: step mismatch");
+
+        UserState storage u = users[msg.sender];
+        // 复投条件：任一额度用完才可开新一轮（静态 2 倍 isExited / 动态 5 倍 dynamicExited）
+        bool newRound = u.isExited || u.dynamicExited;
+        uint256 cap = config.accountDepositCap();
+        require(newRound ? usdtAmount <= cap : u.depositTotal + usdtAmount <= cap, "Mining: over cap");
+
         IERC20(usdt).transferFrom(msg.sender, address(this), usdtAmount);
 
         // 1. 推荐关系绑定（先绑定再分账）
@@ -116,10 +128,22 @@ contract ZYTMining is ReentrancyGuard {
         IERC20(usdt).transfer(address(pool), poolIn);
         pool.injectLiquidity(poolIn);
 
-        // 4. 用户记账：算力（复利固化后重置，P1-12）+ 买额 + 动态额度
-        UserState storage u = users[msg.sender];
+        // 4. 分红结算必须在账本重置之前（依赖 exitDay / powerBase 的历史口径）
         uint256 today = block.timestamp / 86400;
         _settleDividend(msg.sender, today, true);
+
+        // 5. 复投开新一轮：账本重置（2026-10-14 拍板 A：仅算力与分红跨轮累积）
+        if (newRound) {
+            u.depositTotal = 0;
+            u.withdrawTotal = 0;
+            u.receivedValue = 0;
+            u.buyQuota = 0;
+            u.buyUsed = 0;
+            u.dynamicQuota = 0;
+            u.dynamicWithdrawn = 0;
+        }
+
+        // 6. 用户记账：算力（复利基准统一 launchDay）+ 买额 + 动态额度
         u.isExited = false;
         u.dynamicExited = false;
         u.depositTotal += usdtAmount;
@@ -139,6 +163,10 @@ contract ZYTMining is ReentrancyGuard {
         u.powerBase += power;
         u.buyQuota += usdtAmount * config.buyQuotaRate() / 10000;
         u.dynamicQuota += usdtAmount * config.dynamicQuotaMul();
+
+        // 7. 卖出窗口复位：首入与复投均把首期 20% 与窗口锁存归还用户（v9.2 拍板）
+        address fs = config.forceSell();
+        if (fs != address(0)) IZYTForceSellReset(fs).resetWindow(msg.sender);
 
         emit Deposited(msg.sender, usdtAmount, power, u.buyQuota, ref);
     }
@@ -167,10 +195,16 @@ contract ZYTMining is ReentrancyGuard {
      * @dev 卖出实收 USDT 计入累计提取；累计提取 ≥ 2×本金 + 受赠 → 静态出局
      */
     function sellZyt(uint256 zytGross) external nonReentrant whenNotPaused {
+        UserState storage u = users[msg.sender];
+        // v9.2 双轨出局禁卖（2026-10-13 拍板）：静态 2 倍 isExited 与动态 5 倍 dynamicExited
+        // 任一到线即禁卖。卖出窗口（每月 14/28 日）与当期额度（首期 20% / 常规 10% /
+        // 累计达入金 60% 后 2%）由 ZYTForceSell 在 sellFor 的 token 转账钩子内单点校验，
+        // 窗口外或超额直接 revert（见 ZYTForceSell.checkAndBurn）。
+        require(!u.isExited, "Mining: static exited");
+        require(!u.dynamicExited, "Mining: dynamic exited");
         uint256 rate = pool.getCurrentSlippage();
         uint256 usdtOut = pool.sellFor(msg.sender, zytGross);
         IZYTTokenLike(zytToken).recordSellUsdt(msg.sender, usdtOut);
-        UserState storage u = users[msg.sender];
         u.withdrawTotal += usdtOut;
         if (!u.isExited && ZYTCompute.isStaticExited(u.withdrawTotal, u.depositTotal, config.staticExitMul(), u.receivedValue)) {
             _markExited(msg.sender, u);
@@ -336,6 +370,76 @@ contract ZYTMining is ReentrancyGuard {
         withdrawCap = u.depositTotal * config.staticExitMul() + receivedValue;
     }
 
+    // ---------- 迁移（路线 A：一次性迁移，2026-10-13 拍板） ----------
+
+    /// @notice 档位输入（ZYTForceSell 读取；口径 = 清单「withdrawTotal ÷ depositTotal」）
+    function sellTierInputs(address user) external view returns (uint256 depositTotal, uint256 withdrawTotal) {
+        UserState storage u = users[user];
+        return (u.depositTotal, u.withdrawTotal);
+    }
+
+    /// @notice 迁移回填结构（与 UserState 全量字段对齐）
+    struct MigrateUserData {
+        uint256 depositTotal;
+        uint256 withdrawTotal;
+        uint256 powerBase;
+        uint256 powerDay;
+        uint256 pendingDividend;
+        uint256 receivedValue;
+        uint256 exitDay;
+        uint256 buyQuota;
+        uint256 buyUsed;
+        uint256 dynamicQuota;
+        uint256 dynamicWithdrawn;
+        uint256 dividendClaimedDay;
+        bool isExited;
+        bool dynamicExited;
+    }
+
+    /**
+     * @notice 迁移批量回填（owner = 多签；调用方按 50 人一批控制单笔 gas）
+     * @dev 同时复位卖出窗口：老用户窗口迁移日重置为首期 20%（2026-10-13 拍板第 4 项）。
+     *      存量真实资金场景，禁止漏户：调用方须逐户验收比对算力 / 账本 / pendingDividend。
+     */
+    function setUserData(address[] calldata users_, MigrateUserData[] calldata data) external {
+        require(msg.sender == config.owner(), "Mining: not owner");
+        require(users_.length == data.length, "Mining: length mismatch");
+        address fs = config.forceSell();
+        for (uint256 i = 0; i < users_.length; i++) {
+            address a = users_[i];
+            require(a != address(0), "Mining: zero user");
+            UserState storage u = users[a];
+            MigrateUserData calldata d = data[i];
+            u.depositTotal = d.depositTotal;
+            u.withdrawTotal = d.withdrawTotal;
+            u.powerBase = d.powerBase;
+            u.powerDay = d.powerDay;
+            u.pendingDividend = d.pendingDividend;
+            u.receivedValue = d.receivedValue;
+            u.exitDay = d.exitDay;
+            u.buyQuota = d.buyQuota;
+            u.buyUsed = d.buyUsed;
+            u.dynamicQuota = d.dynamicQuota;
+            u.dynamicWithdrawn = d.dynamicWithdrawn;
+            u.isExited = d.isExited;
+            u.dynamicExited = d.dynamicExited;
+            dividendClaimedDay[a] = d.dividendClaimedDay;
+            if (fs != address(0)) IZYTForceSellReset(fs).resetWindow(a);
+            emit UserDataMigrated(a);
+        }
+    }
+
+    /**
+     * @notice 继承旧合约复利基准日 launchDay
+     * @dev 部署顺序红线：必须在迁移写入用户数据时完成，否则老用户复利因子归 1、算力缩水。
+     */
+    function setLaunchDay(uint256 day) external {
+        require(msg.sender == config.owner(), "Mining: not owner");
+        require(day > 0, "Mining: zero day");
+        launchDay = uint64(day);
+        emit LaunchDaySet(day);
+    }
+
     // ---------- 40% 生态奖励（USDT 直发 + 动态额度消耗） ----------
 
     /**
@@ -394,4 +498,9 @@ contract ZYTMining is ReentrancyGuard {
             emit DynamicExited(referrer);
         }
     }
+}
+
+/// @notice ZYTForceSell 卖出窗口复位接口（复投 / 迁移调用）
+interface IZYTForceSellReset {
+    function resetWindow(address user) external;
 }

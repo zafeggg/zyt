@@ -5,157 +5,237 @@ import "@openzeppelin/contracts/access/Ownable.sol";
 
 /**
  * @title ZYTForceSell
- * @notice 强制卖出规则（防囤积、促流通）。
- *         每个钱包从首次收到币起 60 天内分 4 个 15 天窗口：
- *         0-15 天需卖出持币 20%；15-30 / 30-45 / 45-60 天各需 10%。
- *         到期未卖足 → 差额自动销毁。转账视同卖出，接收方同样启动。
- *         被 ZYTToken 的 _update hook 调用；V8 新增 settleExpired 供 Keeper 定期结算到期义务。
- *         P1-13：settleExpired 以窗口位图去重，同一窗口只结算一次，防 Keeper 重复调用导致递归销毁。
- *         P1-14：checkAndBurn 对跨入未结算窗口的第一笔转账先行结算欠账（堵「拖到期末一笔
- *                转账免费免责」，与 keeper 共用位图）。
+ * @notice v9.2 卖出窗口 + 强制卖出（2026-10-13 / 10-14 拍板终版）。
+ *
+ * 规则：
+ *  1. 唯一卖币窗口：每月 14 日、28 日全天（北京时间 UTC+8）；窗口外真实卖出直接 revert。
+ *  2. 每期额度 = 该窗口首次活动时的持币数量 × 档位，并锁存于窗口内（可多次卖，累计不得超额 = 不可多卖）。
+ *     档位（基点）：首期（尚未发生首卖 / 首转出）2000 = 20%；
+ *                   否则 withdrawTotal ≥ 60% × depositTotal → 200 = 2%；否则 1000 = 10%。
+ *     「60%」口径：卖出实收 + 转账折算（withdrawTotal），与清单一致。
+ *  3. 未卖足处理：次日凌晨（15 日 / 29 日）keeper 调 settleExpired，差额销毁，无宽限期。
+ *  4. 转账视同卖出：计入当期已卖额度与首期进度；窗口外转账不阻断（照走 10% 税），也不即时销毁。
+ *  5. 复投 / 迁移：由 ZYTMining 调 resetWindow 复位首期标记与窗口锁存。
+ *
+ * 口径与防护：
+ *  - P1-9 基数口径沿用：本函数在 token 的 super._update 之后调用，余额已扣 amount，
+ *    故「转账前余额」= balanceOf(from) + amount。
+ *  - P1-13：settleExpired 按「窗口 id」去重，同一窗口只结算一次。旧实现按当前余额重算 required
+ *    且销毁不扣减 soldAmount，重复调用会递归衰减（余额 1000 在 20% 档连调 4 次蚀掉约 59%）。
+ *  - 旧 15 天 ×4 期模型（WINDOW1..4_TARGET / firstReceiveTime 计时）已整体作废。
+ *  - 事件签名 ForceSellBurned / WindowSettled / FirstReceive 保持不变（keeper ABI 依赖）。
  */
 contract ZYTForceSell is Ownable {
-    uint256 public constant WINDOW = 15 days;
-    uint256 public constant TOTAL_WINDOWS = 4;
-    // 各窗口最低累计卖出比例（基点）：20% / 10% / 10% / 10%
-    uint256 public constant WINDOW1_TARGET = 2000;
-    uint256 public constant WINDOW2_TARGET = 1000;
-    uint256 public constant WINDOW3_TARGET = 1000;
-    uint256 public constant WINDOW4_TARGET = 1000;
+    // ---------- 档位常量（基点） ----------
+    uint256 public constant TIER_FIRST_BPS = 2000;  // 首期 20%
+    uint256 public constant TIER_STEP_BPS = 1000;   // 常规每期 10%
+    uint256 public constant TIER_AFTER60_BPS = 200; // 累计卖出达入金 60% 后每期 2%
+    uint256 public constant TIER60_BPS = 6000;      // 60% 阈值（分子 withdrawTotal / 分母 depositTotal）
 
-    address public token; // ZYTToken 地址（读取余额 + burnFrom）
-    address public keeper; // V8：到期结算触发方（Keeper 服务地址，owner 可改）
+    address public token;  // ZYTToken
+    address public mining; // ZYTMining（档位输入来源 + 窗口重置授权）
+    address public keeper; // 到期结算触发方
 
-    mapping(address => uint256) public firstReceiveTime;
-    mapping(address => uint256) public soldAmount; // 累计卖出量（转账视同卖出；V9：销毁不扣减）
-    mapping(address => bool) public initialized;
-    // P1-13：窗口结算位图。bit i 置位表示第 i+1 窗口已由 Keeper 结算过。
-    mapping(address => uint256) public settledWindows;
+    struct Window {
+        uint256 windowId; // 最近一次锁存的窗口 id（0 = 未锁存）
+        uint256 quota;    // 该窗口额度（ZYT，锁存）
+        uint256 sold;     // 该窗口已卖（ZYT，含转账视同卖出）
+    }
+
+    mapping(address => Window) public windows;
+    mapping(address => bool) public initialized;         // 曾收到币（结算前置）
+    mapping(address => uint256) public firstReceiveTime; // 首收时间（留档 / 审计）
+    mapping(address => bool) public firstSellDone;       // 首期是否已完成（首卖或首转出后置位）
+    mapping(address => mapping(uint256 => bool)) public windowSettled; // 窗口结算去重（P1-13）
 
     event FirstReceive(address indexed user, uint256 time);
     event ForceSellBurned(address indexed user, uint256 amount, uint256 window);
     event WindowSettled(address indexed user, uint256 window);
+    event WindowOpened(address indexed user, uint256 window, uint256 quota, uint256 tierBps);
+    event WindowSold(address indexed user, uint256 window, uint256 amount, uint256 sold);
+    event WindowReset(address indexed user);
 
     constructor(address token_) Ownable(msg.sender) {
         token = token_;
     }
 
-    /// @notice 设置 Keeper 结算地址（V8；owner=多签）
+    /// @notice 设置 Keeper 结算地址（owner = 多签）
     function setKeeper(address _keeper) external onlyOwner {
         keeper = _keeper;
     }
 
-    /// @notice 由 ZYTToken 调用：记录铸币接收方首次收币时间（启动强制卖出窗口）
-    function onMint(address to, uint256 amount) external {
-        require(msg.sender == token, "ZYTForceSell: only token");
-        if (to != address(0) && !initialized[to] && to != address(this)) {
-            initialized[to] = true;
-            firstReceiveTime[to] = block.timestamp;
-            emit FirstReceive(to, block.timestamp);
-        }
+    /// @notice 设置 Mining（档位输入来源 + 窗口重置授权）
+    function setMining(address _mining) external onlyOwner {
+        mining = _mining;
     }
 
-    /// @notice 由 ZYTToken 调用：记录转账并返回需销毁量
-    /// @dev P1-14（AUDIT-5）：过期未结算窗口的欠账在转账路径上先行结算。
-    ///      修前 soldAmount += amount 先于欠账判定，本次转账自身即充当卖出进度，
-    ///      用户可把全部义务拖到最后一期用一笔转账免费完成（实测窗口 4 转 50% 零销毁免责）。
-    ///      修后：当前窗口若尚未被结算（keeper 的 settleExpired 或本函数），先按
-    ///      「转账前」的 soldAmount 判定欠账并烧毁（上限为本次转账量），再照常累加
-    ///      本次卖出进度。与 settleExpired 共用 settledWindows 位图（P1-13），
-    ///      谁先结算谁置位，互不重复；每期足额卖出的正常用户不受任何影响。
-    function checkAndBurn(address from, address to, uint256 amount) external returns (uint256) {
-        require(msg.sender == token, "ZYTForceSell: only token");
-        uint256 burned = 0;
+    // ---------- 视图 ----------
 
-        // 首次收币（from 为铸币地址时由 to 触发，转账时由 from 触发）
-        if (to != address(0) && !initialized[to] && to != address(this)) {
-            initialized[to] = true;
-            firstReceiveTime[to] = block.timestamp;
-            emit FirstReceive(to, block.timestamp);
-        }
-        if (!initialized[from] && from != address(0)) {
-            initialized[from] = true;
-            firstReceiveTime[from] = block.timestamp;
-            emit FirstReceive(from, block.timestamp);
-        }
-
-        // P1-14：跨入未结算窗口的第一笔转账 → 先结算此前各期累计欠账。
-        // 判定基准用「转账前」的 soldAmount（不把本次算进去），堵死「拖到期末一笔转账免费免责」。
-        uint256 elapsed = block.timestamp - firstReceiveTime[from];
-        if (elapsed >= WINDOW) {
-            uint256 win = _currentWindow(elapsed);
-            uint256 bit = 1 << (win - 1);
-            if ((settledWindows[from] & bit) == 0) {
-                settledWindows[from] |= bit;
-                uint256 targetBps = _targetBps(elapsed);
-                // P1-9 口径：以「转账前余额（持币总量）」为基数（本函数在 super._update 之后调用）
-                uint256 bal = IERC20View(token).balanceOf(from) + amount;
-                uint256 required = bal * targetBps / 10000;
-                if (soldAmount[from] < required) {
-                    uint256 deficit = required - soldAmount[from];
-                    burned = amount < deficit ? amount : deficit;
-                    emit ForceSellBurned(from, burned, win);
-                }
-                emit WindowSettled(from, win);
-            }
-        }
-
-        // 转账视同卖出：本次量照常计入累计进度（供后续窗口判定使用）
-        soldAmount[from] += amount;
-
-        return burned;
+    /// @notice 当前北京时间的卖币窗口（windowId 为 0 表示今日非卖币日）
+    function currentWindow() external view returns (uint256 windowId, bool open) {
+        return _windowIdAt(block.timestamp);
     }
+
+    /// @notice 待结算窗口 id（昨日为 14/28 日时返回其 id，否则 0）；keeper 结算前可预检
+    function pendingSettleWindow() external view returns (uint256) {
+        return _previousWindowId(block.timestamp);
+    }
+
+    /// @notice 用户当期档位（基点）
+    function tierBpsOf(address user) external view returns (uint256) {
+        return _tierBps(user);
+    }
+
+    // ---------- 记录与校验（ZYTToken 转账钩子调用） ----------
 
     /**
-     * @notice V8：到期自动销毁结算（Keeper 或 owner 调用）
-     * @dev 对指定用户检查当前窗口累计应卖量，未卖足部分销毁差额（上限为持币余额）
+     * @notice 由 ZYTToken 调用：记录一次转出并返回需销毁量
+     * @dev 真实卖出（to == pool）受窗口与额度强约束；转账仅计数、不阻断、不即时销毁。
+     * @return burned 需销毁量（v9.2 仅转账路径恒为 0；销毁统一由 settleExpired 完成）
+     */
+    function checkAndBurn(address from, address to, uint256 amount) external returns (uint256 burned) {
+        require(msg.sender == token, "FS: only token");
+        burned = 0;
+        if (from == address(0) || to == address(0) || amount == 0) return 0;
+
+        _touch(from);
+        _touch(to);
+
+        address poolAddr = IZYTTokenInfo(token).pool();
+        bool isSell = poolAddr != address(0) && to == poolAddr;
+
+        (uint256 windowId, bool open) = _windowIdAt(block.timestamp);
+        if (isSell) require(open, "FS: window closed"); // 窗口外禁卖（合约强制）
+
+        if (open) {
+            // P1-9 口径：余额已扣 amount，故「转账前余额」= balanceOf + amount
+            uint256 balBefore = IERC20View(token).balanceOf(from) + amount;
+            Window storage w = windows[from];
+            if (w.windowId != windowId) {
+                // 窗口首次活动：锁存额度（避免「卖一笔额度就缩水、再卖一笔」的重复放大）
+                uint256 bps = _tierBps(from);
+                w.windowId = windowId;
+                w.quota = balBefore * bps / 10000;
+                w.sold = 0;
+                emit WindowOpened(from, windowId, w.quota, bps);
+            }
+            w.sold += amount;
+            emit WindowSold(from, windowId, amount, w.sold);
+            if (isSell) require(w.sold <= w.quota, "FS: over quota"); // 不可多卖
+        }
+
+        // 首期结束：任何一次卖出 / 转出（视同卖出）后，20% 档不再适用于后续窗口
+        if (!firstSellDone[from]) {
+            firstSellDone[from] = true;
+        }
+    }
+
+    /// @notice 由 ZYTToken 调用：记录接收方首次收币（启动结算前置标记）
+    function onMint(address to, uint256) external {
+        require(msg.sender == token, "FS: only token");
+        if (to != address(0)) _touch(to);
+    }
+
+    /// @notice 复投 / 迁移复位：清窗口锁存并把首期 20% 归还给用户（Mining 或 owner 调用）
+    function resetWindow(address user) external {
+        require(msg.sender == mining || msg.sender == owner(), "FS: not auth");
+        windows[user] = Window(0, 0, 0);
+        firstSellDone[user] = false;
+        emit WindowReset(user);
+    }
+
+    // ---------- 到期结算（keeper：15 日 / 29 日凌晨） ----------
+
+    /**
+     * @notice 结算上一个卖币窗口：未卖足额度的差额销毁（无宽限期）
+     * @dev 目标窗口由 block.timestamp 推导（昨日为 14/28 日），keeper 无需传参、不会传错。
+     *      同一窗口按 windowSettled 去重（P1-13），重复调用为零操作。
      * @return burned 本次销毁数量
      */
     function settleExpired(address user) external returns (uint256 burned) {
         require(msg.sender == keeper || msg.sender == owner(), "FS: not keeper");
-        require(initialized[user], "FS: not init");
-        uint256 elapsed = block.timestamp - firstReceiveTime[user];
-        if (elapsed < WINDOW) return 0; // 未到期
+        if (!initialized[user]) return 0;
+        uint256 targetId = _previousWindowId(block.timestamp);
+        if (targetId == 0) return 0; // 昨日非卖币日
+        if (windowSettled[user][targetId]) return 0; // P1-13 去重
+        windowSettled[user][targetId] = true;
 
-        uint256 win = _currentWindow(elapsed);
-        uint256 bit = 1 << (win - 1);
-        // P1-13 修复：同一窗口只结算一次。
-        // 原实现每次调用都按「当前余额 × 目标比例」重算 required，而 V9 规定销毁不扣减 soldAmount，
-        // 于是余额下降使下次 required 同步下降，形成递归衰减：余额 1000 在 20% 窗口被连续调用四次
-        // 会依次销毁 200 / 160 / 128 / 102.4，四天蚀掉约 59%。Keeper 一旦定期调用就是持续抽水。
-        if ((settledWindows[user] & bit) != 0) return 0;
-        settledWindows[user] |= bit;
+        Window storage w = windows[user];
+        uint256 quota;
+        uint256 sold;
+        if (w.windowId == targetId) {
+            quota = w.quota;
+            sold = w.sold;
+        } else {
+            // 该窗口无活动：余额自窗口起未变，可按当前余额 × 档位计算
+            quota = IERC20View(token).balanceOf(user) * _tierBps(user) / 10000;
+            sold = 0;
+        }
 
-        uint256 targetBps = _targetBps(elapsed);
         uint256 bal = IERC20View(token).balanceOf(user);
-        uint256 required = bal * targetBps / 10000;
-        if (soldAmount[user] < required) {
-            uint256 deficit = required - soldAmount[user];
+        if (sold < quota) {
+            uint256 deficit = quota - sold;
             burned = deficit < bal ? deficit : bal;
             if (burned > 0) {
-                IERC20Burnable(token).burnFrom(user, burned); // forceSell 为授权 burner
-                emit ForceSellBurned(user, burned, win);
+                IERC20Burnable(token).burnFrom(user, burned); // 本合约持销毁权限
+                emit ForceSellBurned(user, burned, targetId);
             }
         }
-        emit WindowSettled(user, win);
+        emit WindowSettled(user, targetId);
     }
 
-    /// @notice 当前累计应卖目标（基点）：15d=20%、30d=30%、45d=40%、60d+=50%
-    /// @dev 口径（2026-09-22 用户确认）：每期最低卖出比例为 20% / 10% / 10% / 10%，
-    ///      逐期累计即 20% / 30% / 40% / 50%。常量加总 = 5000，与累计口径一致。
-    ///      （原注释误写 60%，与常量加总不符，此处已更正）
-    function _targetBps(uint256 elapsed) internal pure returns (uint256) {
-        if (elapsed >= 4 * WINDOW) return WINDOW1_TARGET + WINDOW2_TARGET + WINDOW3_TARGET + WINDOW4_TARGET; // 50%
-        if (elapsed >= 3 * WINDOW) return WINDOW1_TARGET + WINDOW2_TARGET + WINDOW3_TARGET;           // 40%
-        if (elapsed >= 2 * WINDOW) return WINDOW1_TARGET + WINDOW2_TARGET;                           // 30%
-        return WINDOW1_TARGET;                                                                      // 20%
+    // ---------- 内部 ----------
+
+    /// @notice 首收登记（幂等）
+    function _touch(address user) internal {
+        if (!initialized[user]) {
+            initialized[user] = true;
+            firstReceiveTime[user] = block.timestamp;
+            emit FirstReceive(user, block.timestamp);
+        }
     }
 
-    function _currentWindow(uint256 elapsed) internal pure returns (uint256) {
-        if (elapsed >= 4 * WINDOW) return 4;
-        if (elapsed >= 3 * WINDOW) return 3;
-        if (elapsed >= 2 * WINDOW) return 2;
-        return 1;
+    /// @notice 当期档位：首期 20% →（withdrawTotal ≥ 60% × depositTotal）2% → 常规 10%
+    function _tierBps(address user) internal view returns (uint256) {
+        if (!firstSellDone[user]) return TIER_FIRST_BPS;
+        (uint256 dep, uint256 wd) = IZYTMiningTier(mining).sellTierInputs(user);
+        if (dep > 0 && wd * 10000 >= dep * TIER60_BPS) return TIER_AFTER60_BPS;
+        return TIER_STEP_BPS;
+    }
+
+    /**
+     * @notice 北京时间（UTC+8）日期 → 卖币窗口 id
+     * @return windowId 形如 20261014 / 20261028；非 14/28 日返回 0
+     * @return open 今日是否为卖币日
+     */
+    function _windowIdAt(uint256 ts) internal pure returns (uint256 windowId, bool open) {
+        (uint256 y, uint256 m, uint256 d) = _beijingDate(ts);
+        if (d == 14 || d == 28) return (y * 10000 + m * 100 + d, true);
+        return (0, false);
+    }
+
+    /// @notice 上一个卖币窗口 id（以「北京时间的昨天」判定；非卖币日返回 0）
+    function _previousWindowId(uint256 ts) internal pure returns (uint256) {
+        if (ts < 1 days) return 0;
+        (uint256 windowId, ) = _windowIdAt(ts - 1 days);
+        return windowId;
+    }
+
+    /**
+     * @notice 时间戳 → 北京时间公历日期（Howard Hinnant civil_from_days，纯整数）
+     * @dev 仅用于 1970 年后的时间戳，无需负数分支。
+     */
+    function _beijingDate(uint256 ts) internal pure returns (uint256 y, uint256 m, uint256 d) {
+        uint256 z = (ts + 8 * 3600) / 86400 + 719468;
+        uint256 era = z / 146097;
+        uint256 doe = z - era * 146097;
+        uint256 yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+        y = yoe + era * 400;
+        uint256 doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+        uint256 mp = (5 * doy + 2) / 153;
+        d = doy - (153 * mp + 2) / 5 + 1;
+        m = mp < 10 ? mp + 3 : mp - 9;
+        if (m <= 2) y += 1;
     }
 }
 
@@ -165,4 +245,14 @@ interface IERC20View {
 
 interface IERC20Burnable {
     function burnFrom(address from, uint256 amount) external;
+}
+
+/// @notice ZYTToken 视图（真实卖出识别 + 销毁权限）
+interface IZYTTokenInfo {
+    function pool() external view returns (address);
+}
+
+/// @notice ZYTMining 档位输入（depositTotal / withdrawTotal）
+interface IZYTMiningTier {
+    function sellTierInputs(address user) external view returns (uint256 depositTotal, uint256 withdrawTotal);
 }

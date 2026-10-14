@@ -107,6 +107,7 @@ describe("ZYT v9", function () {
     await creator.setPoolManager(await pool.getAddress());
     await mining.setDeflation(await deflation.getAddress());
     await forceSell.setKeeper(keeper.address);
+    await forceSell.setMining(await mining.getAddress()); // v9.2：窗口复位授权（复投 / 迁移）
 
     // ---- 建池 ----
     await usdt.faucet(SEED_USDT * 100n);
@@ -471,5 +472,61 @@ describe("ZYT v9", function () {
     const expected8 = U500 * 101n ** 8n / 100n ** 5n / 100n ** 3n;
     expect(await mining.powerOf(alice.address)).to.equal(expected8);
     expect(await mining.powerOf(bob.address)).to.equal(expected8);
+  });
+
+  it("12. v9.2 卖币窗口：14/28 日历窗 + 首期 20% 额度 + 窗口外禁卖 + 次日结算销毁", async function () {
+    // 时间锚点显式设定，避免依赖运行当天的真实日期（14/28 日跑与非窗口日跑行为必须一致）
+    const WINDOW_TS = Date.UTC(2026, 10, 13, 16, 0, 0) / 1000; // 2026-11-14 00:00 北京
+    const AFTER_TS = Date.UTC(2026, 10, 14, 16, 30, 0) / 1000; // 2026-11-15 00:30 北京
+    const setTime = async (t) => {
+      await ethers.provider.send("evm_setNextBlockTimestamp", [t]);
+      await ethers.provider.send("evm_mine");
+    };
+
+    await setTime(WINDOW_TS);
+    expect(await forceSell.currentWindow()).to.deep.equal([20261114n, true]);
+
+    // bob 入金 → 阶段 2 买入取得 ZYT（买币路径只登记首收，不结束首期）
+    await depositOf(bob, U500, ethers.ZeroAddress);
+    await config.setUint("poolStage1USDT", 21000n * E18);
+    await config.setUint("poolStage2USDT", 10_000_000n * E18);
+    await usdt.connect(bob).faucet(U500);
+    await usdt.connect(bob).approve(await mining.getAddress(), U500);
+    await mining.connect(bob).buy(U500);
+    const bal = await zyt.balanceOf(bob.address);
+    expect(bal).to.be.gt(0n);
+    expect(await forceSell.firstSellDone(bob.address)).to.equal(false); // 首期
+
+    // 首期额度 = 窗口首次活动时余额 × 20%；超出即「不可多卖」
+    const quota = bal * 2000n / 10000n;
+    await zyt.connect(bob).approve(await pool.getAddress(), bal);
+    await expect(mining.connect(bob).sellZyt(bal * 21n / 100n))
+      .to.be.revertedWith("FS: over quota");
+
+    // 额度内卖出成功：额度锁存 + 已卖累计 + 首期结束
+    await mining.connect(bob).sellZyt(quota / 2n);
+    const w = await forceSell.windows(bob.address);
+    expect(w[0]).to.equal(20261114n);
+    expect(w[1]).to.equal(quota);
+    expect(w[2]).to.equal(quota / 2n);
+    expect(await forceSell.firstSellDone(bob.address)).to.equal(true);
+
+    // 窗口外（15 日）禁卖
+    await setTime(AFTER_TS);
+    expect(await forceSell.pendingSettleWindow()).to.equal(20261114n);
+    await expect(mining.connect(bob).sellZyt(1n * E18)).to.be.revertedWith("FS: window closed");
+
+    // 次日凌晨 keeper 结算：未卖足额度部分销毁（无宽限期）
+    const supplyBefore = await zyt.totalSupply();
+    const balBefore = await zyt.balanceOf(bob.address);
+    await forceSell.connect(keeper).settleExpired(bob.address);
+    const burned = supplyBefore - (await zyt.totalSupply());
+    expect(burned).to.equal(quota - quota / 2n);
+    expect(await zyt.balanceOf(bob.address)).to.equal(balBefore - burned);
+
+    // P1-13：同一窗口重复结算为零操作
+    const supplyMid = await zyt.totalSupply();
+    await forceSell.connect(keeper).settleExpired(bob.address);
+    expect(await zyt.totalSupply()).to.equal(supplyMid);
   });
 });
