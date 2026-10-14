@@ -6,9 +6,12 @@
  *   AUDIT-2  365 天无交互 → claim 零额推进游标 → deposit 恢复（修复后语义）
  *   AUDIT-3  owner 可提高 totalSupplyCap 并更换 minter → 21 亿上限非代码强制
  *   AUDIT-4  用户直转 ZYT 给 pool：币滞留且转出折算被跳过（withdrawTotal 不增）
- *   AUDIT-5  拖到窗口 4 一次性转出 → 欠账全额烧毁（P1-14 修复后，免费免责堵死）
- *   P1-14    每期足额卖出的用户跨窗口转账不被烧（正常用户零影响）
+ *   AUDIT-5  窗口内超额卖出被拒；无「拖到期末一次性转出免责」路径
+ *   P1-14    窗口内卖足额度的用户结算零销毁；次期自动降为常规 10% 档
  *   AUDIT-6  转账硬上限为余额 90.9%（10% 税另扣，转全部必失败）
+ *
+ * v9.2（2026-10-14）：卖出仅限每月 14/28 日历窗（北京时间）；旧「首收后 4×15 天窗口 +
+ *   转账即时烧欠账」模型已作废，改为「当期额度 + 次日凌晨 keeper 结算销毁」。
  */
 const { expect } = require("chai");
 const { ethers } = require("hardhat");
@@ -22,6 +25,36 @@ const U500 = 500n * E18;
 
 async function latestTs() {
   return (await ethers.provider.getBlock("latest")).timestamp;
+}
+
+/**
+ * v9.2 卖币窗口（北京时间 14/28 日全天，UTC+8）：
+ * 把链上时钟推进到「下一个卖币日」的 00:00，返回 { ts, id, dom }。
+ * 相对推进而非固定绝对时刻：Hardhat 链上时钟跨用例单调递增且跨文件保持。
+ */
+async function gotoWindow(opts = {}) {
+  const want = opts.dom || null;
+  const now = await latestTs();
+  for (let d = 1; d <= 70; d++) {
+    const t = now + d * DAY;
+    const bj = new Date((t + 8 * 3600) * 1000);
+    const dom = bj.getUTCDate();
+    if ((dom !== 14 && dom !== 28) || (want && dom !== want)) continue;
+    const dayStart = Date.UTC(bj.getUTCFullYear(), bj.getUTCMonth(), bj.getUTCDate() - 1, 16, 0, 0) / 1000;
+    const target = dayStart + (opts.offsetDays || 0) * DAY;
+    await setTime(target);
+    return {
+      ts: target,
+      id: BigInt(bj.getUTCFullYear() * 10000 + (bj.getUTCMonth() + 1) * 100 + dom),
+      dom,
+    };
+  }
+  throw new Error("gotoWindow: 70 天内未找到卖币日");
+}
+
+async function setTime(t) {
+  await ethers.provider.send("evm_setNextBlockTimestamp", [t]);
+  await ethers.provider.send("evm_mine", []);
 }
 
 describe("ZYT v9.1 漏洞检测", function () {
@@ -154,16 +187,18 @@ describe("ZYT v9.1 漏洞检测", function () {
 
   // ================= AUDIT-2（修复后） =================
   it("AUDIT-2-fix: 365 天无交互 → claim 零额推进游标 → deposit 恢复", async function () {
-    await depositOf(alice, U500, ethers.ZeroAddress);
+    // v9.2 单钱包累计入金上限 500U：本用例按 200U 构造（两次入金合计 400U）
+    const U200 = 200n * E18;
+    await depositOf(alice, U200, ethers.ZeroAddress);
     const t = await latestTs();
     await ethers.provider.send("evm_setNextBlockTimestamp", [t + 400 * DAY]);
     await ethers.provider.send("evm_mine", []);
 
     // deposit 仍被 strict 检查拦（设计保留：强制先结算分红）
-    await usdt.connect(alice).faucet(U500);
-    await usdt.connect(alice).approve(await mining.getAddress(), U500);
+    await usdt.connect(alice).faucet(U200);
+    await usdt.connect(alice).approve(await mining.getAddress(), U200);
     await expect(
-      mining.connect(alice).deposit(U500, ethers.ZeroAddress)
+      mining.connect(alice).deposit(U200, ethers.ZeroAddress)
     ).to.be.revertedWith("Mining: settle dividend first");
 
     // 修复后：claim 零额成功（发 Claimed(user,0)），游标推进 365 天
@@ -173,9 +208,9 @@ describe("ZYT v9.1 漏洞检测", function () {
     expect(dayAfter).to.be.gt(dayBefore);
 
     // deposit 恢复（toDay - from = 35 ≤ 365）
-    await mining.connect(alice).deposit(U500, ethers.ZeroAddress);
+    await mining.connect(alice).deposit(U200, ethers.ZeroAddress);
     const info = await mining.userInfo(alice.address);
-    expect(info.depositTotal).to.equal(U500 * 2n);
+    expect(info.depositTotal).to.equal(U200 * 2n);
     console.log("      [AUDIT-2-fix] 游标", dayBefore.toString(), "→", dayAfter.toString(),
                 "| deposit 恢复，累计入金", ethers.formatUnits(info.depositTotal, 18), "U");
   });
@@ -214,6 +249,7 @@ describe("ZYT v9.1 漏洞检测", function () {
 
   // ================= AUDIT-4 =================
   it("AUDIT-4: 用户直转 ZYT 给 pool → 币滞留无出口，且不触发转出折算记账", async function () {
+    await gotoWindow(); // v9.2：转入 pool 视同卖出，受卖币窗口约束
     // 降阶段 1 门槛，使 alice 可使用买额买币（获得 ZYT）
     await config.setUint("poolStage1USDT", 1_000n * E18);
     await depositOf(alice, U500, ethers.ZeroAddress);
@@ -224,14 +260,19 @@ describe("ZYT v9.1 漏洞检测", function () {
     const bal = await zyt.balanceOf(alice.address);
     expect(bal).to.be.gt(0n);
 
+    // v9.2：直转 pool 视同卖出，受当期额度（首期 20%）约束 → 全额转出被拒
+    await expect(zyt.connect(alice).transfer(await pool.getAddress(), bal))
+      .to.be.revertedWith("FS: over quota");
+
+    const move = bal * 2000n / 10000n;
     const poolZytBefore = await zyt.balanceOf(await pool.getAddress());
     const divPoolBefore = await pool.dividendPoolZyt();
 
     // 直转 pool（pool 在白名单，走 isWhiteList[to] 分支）
-    await zyt.connect(alice).transfer(await pool.getAddress(), bal);
+    await zyt.connect(alice).transfer(await pool.getAddress(), move);
 
     const poolZytAfter = await zyt.balanceOf(await pool.getAddress());
-    expect(poolZytAfter - poolZytBefore).to.equal(bal);
+    expect(poolZytAfter - poolZytBefore).to.equal(move);
 
     // 记账侧：withdrawTotal 未增加（recordTransferOut 被 `to != pool` 跳过）
     const info = await mining.userInfo(alice.address);
@@ -239,12 +280,13 @@ describe("ZYT v9.1 漏洞检测", function () {
     // 分红池记账也未增加（币不归入 dividendPoolZyt）
     expect(await pool.dividendPoolZyt()).to.equal(divPoolBefore);
 
-    console.log("      [AUDIT-4] 滞留 pool 的 ZYT:", ethers.formatUnits(bal, 18),
+    console.log("      [AUDIT-4] 滞留 pool 的 ZYT:", ethers.formatUnits(move, 18),
                 "| withdrawTotal:", info.withdrawTotal.toString());
   });
 
   // ================= AUDIT-5（修复后，P1-14） =================
-  it("AUDIT-5-fix: 拖到窗口 4 一次性转出 → 欠账全额烧毁，免费免责路径堵死", async function () {
+  it("AUDIT-5-fix: 窗口内超额卖出被拒；无「拖到期末一次性转出免责」路径", async function () {
+    const g = await gotoWindow();
     await config.setUint("poolStage1USDT", 1_000n * E18);
     await depositOf(alice, U500, ethers.ZeroAddress);
     await usdt.connect(alice).faucet(1_000n * E18);
@@ -252,30 +294,34 @@ describe("ZYT v9.1 漏洞检测", function () {
     await mining.connect(alice).buy(400n * E18);
     const bal = await zyt.balanceOf(alice.address);
 
-    const t = await latestTs();
-    await ethers.provider.send("evm_setNextBlockTimestamp", [t + 61 * DAY]);
-    await ethers.provider.send("evm_mine", []);
-    expect(await forceSell.soldAmount(alice.address)).to.equal(0n);
+    // 1) 窗口内超额卖出（首期额度 = 余额 × 20%）→ 直接 revert，无「一次性卖出」通道
+    await zyt.connect(alice).approve(await pool.getAddress(), bal);
+    await expect(mining.connect(alice).sellZyt(bal)).to.be.revertedWith("FS: over quota");
+    await expect(mining.connect(alice).sellZyt(bal * 2000n / 10000n + 1n))
+      .to.be.revertedWith("FS: over quota");
 
-    // 转 50%：soldAmount_before = 0，required = 0.5B → burned = min(0.5B, 0.5B) = 0.5B
-    //   实扣 = 0.5B(转账) + 0.5B(烧) + 0.05B(税) = 1.05B > B → revert
-    await expect(
-      zyt.connect(alice).transfer(bob.address, bal / 2n)
-    ).to.be.reverted;
+    // 2) 转账视同卖出：能抵充当期额度，但成本 = 10% 税 + 币转出（非免费免责）
+    const move = bal * 2000n / 10000n;
+    const supplyBefore = await zyt.totalSupply();
+    await zyt.connect(alice).transfer(bob.address, move);
+    const w = await forceSell.windows(alice.address);
+    expect(w[0]).to.equal(g.id);
+    expect(w[1]).to.equal(move); // 额度 = 转账前余额 × 20%
+    expect(w[2]).to.equal(move); // 已卖进度含转出量
+    expect(await zyt.totalSupply()).to.be.lt(supplyBefore); // 转账税 40% 进入销毁
 
-    // 转 40%：burned = min(0.4B, 0.5B) = 0.4B；实扣 = 0.4(转账) + 0.4(烧) + 0.04(税) = 0.84B
-    const amount = (bal * 40n) / 100n;
-    const tax = (amount * 1000n) / 10000n;
-    await zyt.connect(alice).transfer(bob.address, amount);
-    const after = await zyt.balanceOf(alice.address);
-    // 剩余 = B - 转账 - 烧(=转账额，欠账更大) - 税
-    expect(after).to.equal(bal - amount - amount - tax);
-    console.log("      [AUDIT-5-fix] 余额", ethers.formatUnits(bal, 18),
-                "| 转 50% revert | 转 40% 通过，烧欠账后剩余", ethers.formatUnits(after, 18),
-                "| soldAmount", ethers.formatUnits(await forceSell.soldAmount(alice.address), 18));
+    // 3) 窗口外转账：不阻断、不销毁欠账、不计入当期额度
+    await setTime(g.ts + DAY + 1800); // 15/29 日（窗口已结束）
+    const bal2 = await zyt.balanceOf(alice.address);
+    await zyt.connect(alice).transfer(carol.address, bal2 / 10n);
+    const w2 = await forceSell.windows(alice.address);
+    expect(w2[2]).to.equal(w[2]); // 窗口外转出不改变当期已卖进度
+    console.log("      [AUDIT-5-fix] 超额卖出 revert | 转出抵充额度", ethers.formatUnits(move, 18),
+                "| 窗口外转出不占当期额度");
   });
 
-  it("P1-14: 每期足额卖出的用户跨窗口转账不被烧（正常用户零影响）", async function () {
+  it("P1-14: 窗口内卖足额度的用户结算零销毁；次期自动降为常规 10% 档", async function () {
+    const g = await gotoWindow({ dom: 14 });
     await config.setUint("poolStage1USDT", 1_000n * E18);
     await depositOf(alice, U500, ethers.ZeroAddress);
     await usdt.connect(alice).faucet(1_000n * E18);
@@ -283,20 +329,26 @@ describe("ZYT v9.1 漏洞检测", function () {
     await mining.connect(alice).buy(400n * E18);
     const bal = await zyt.balanceOf(alice.address);
 
-    // 窗口 1 内转出 20%（视同卖出，elapsed < 15 天 → 不触发结算）
-    const t = await latestTs();
-    await zyt.connect(alice).transfer(bob.address, (bal * 20n) / 100n);
-    expect(await forceSell.soldAmount(alice.address)).to.equal((bal * 20n) / 100n);
+    // 首期窗口（14 日）：卖足 20%
+    await zyt.connect(alice).approve(await pool.getAddress(), bal);
+    await mining.connect(alice).sellZyt(bal * 2000n / 10000n);
+    await setTime(g.ts + DAY + 1800);
+    const after1 = await zyt.balanceOf(alice.address);
+    await forceSell.connect(keeper).settleExpired(alice.address);
+    expect(await zyt.balanceOf(alice.address)).to.equal(after1); // 卖足 → 结算零销毁
 
-    // 快进 20 天（窗口 2），alice 已完成窗口 1 的 20% 义务 → 跨窗口转账不被烧
-    await ethers.provider.send("evm_setNextBlockTimestamp", [t + 20 * DAY]);
-    await ethers.provider.send("evm_mine", []);
-    const before = await zyt.balanceOf(alice.address);
-    await zyt.connect(alice).transfer(carol.address, (bal * 10n) / 100n);
-    const after = await zyt.balanceOf(alice.address);
-    // 只扣转账 10% + 税 1%，无额外销毁
-    expect(after).to.equal(before - (bal * 11n) / 100n);
-    console.log("      [P1-14] 窗口1 卖 20% 后跨窗口转 10% → 无烧，实扣仅 11%");
+    // 下一个窗口（28 日）：首期已结束，档位降为常规 10%
+    const g2 = await gotoWindow({ dom: 28 });
+    expect(await forceSell.tierBpsOf(alice.address)).to.equal(1000n);
+    const bal2 = await zyt.balanceOf(alice.address);
+    await zyt.connect(alice).approve(await pool.getAddress(), bal2);
+    await expect(mining.connect(alice).sellZyt(bal2 * 1000n / 10000n + 1n))
+      .to.be.revertedWith("FS: over quota");
+    await mining.connect(alice).sellZyt(bal2 * 1000n / 10000n);
+    const w2 = await forceSell.windows(alice.address);
+    expect(w2[0]).to.equal(g2.id);
+    expect(w2[1]).to.equal(bal2 * 1000n / 10000n);
+    console.log("      [P1-14] 首期卖足 20% 结算零销毁 | 次期档位 10% 生效");
   });
 
   // ================= AUDIT-6 =================

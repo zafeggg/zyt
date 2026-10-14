@@ -18,6 +18,38 @@ async function ts() {
   return (await ethers.provider.getBlock("latest")).timestamp;
 }
 
+/**
+ * v9.2 卖币窗口（北京时间 14/28 日全天，UTC+8）：
+ * 把链上时钟推进到「下一个卖币日」的 00:00，返回 { ts, id, dom }。
+ * 采用相对推进而非固定绝对时刻：Hardhat 链上时钟在用例间单调递增且跨文件保持，
+ * 固定锚点会在后续用例中因「时间低于最新区块」被拒，也会随运行当天真实日期漂移。
+ */
+async function gotoWindow(opts = {}) {
+  const want = opts.dom || null;
+  const now = await ts();
+  for (let d = 1; d <= 70; d++) {
+    const t = now + d * DAY;
+    const bj = new Date((t + 8 * 3600) * 1000);
+    const dom = bj.getUTCDate();
+    if ((dom !== 14 && dom !== 28) || (want && dom !== want)) continue;
+    const dayStart = Date.UTC(bj.getUTCFullYear(), bj.getUTCMonth(), bj.getUTCDate() - 1, 16, 0, 0) / 1000;
+    const target = dayStart + (opts.offsetDays || 0) * DAY;
+    await setTime(target);
+    return {
+      ts: target,
+      id: BigInt(bj.getUTCFullYear() * 10000 + (bj.getUTCMonth() + 1) * 100 + dom),
+      dom,
+    };
+  }
+  throw new Error("gotoWindow: 70 天内未找到卖币日");
+}
+
+/** 把链上时间锚定到指定时刻 */
+async function setTime(t) {
+  await ethers.provider.send("evm_setNextBlockTimestamp", [t]);
+  await ethers.provider.send("evm_mine", []);
+}
+
 describe("ZYT v9", function () {
   let usdt, zyt, config, creator, pool, referral, forceSell, mining, deflation, pair, factory;
   let deployer, keeper, alice, bob, carol, root;
@@ -187,6 +219,7 @@ describe("ZYT v9", function () {
   });
 
   it("4. 阶段 2 买入（消耗买额）与卖出（滑点 30/30/40）", async function () {
+    await gotoWindow(); // v9.2：卖出仅限 14/28 日历窗
     await depositOf(alice, U500, ethers.ZeroAddress);
     await config.setUint("poolStage1USDT", 21000n * E18);
     await config.setUint("poolStage2USDT", 10_000_000n * E18);
@@ -203,14 +236,15 @@ describe("ZYT v9", function () {
     await expect(mining.connect(bob).buy(1n)).to.be.revertedWith("Mining: over buy quota");
     expect(await pool.swapGate()).to.equal(false); // gate 复位
 
-    // 卖出 1/2：滑点 5%，30/30/40（卖出 approve 对象 = PoolManager）
+    // 卖出首期额度（余额 × 20%，v9.2「不可多卖」上限）：滑点 5%，30/30/40（approve 对象 = PoolManager）
+    const sellAmt = bobZyt * 2000n / 10000n;
     const marketBefore = await zyt.balanceOf(root.address);
     const divBefore = await pool.dividendPoolZyt();
     const supplyBefore = await zyt.totalSupply();
     const uBefore = await usdt.balanceOf(bob.address);
-    await zyt.connect(bob).approve(await pool.getAddress(), bobZyt / 2n);
-    await mining.connect(bob).sellZyt(bobZyt / 2n);
-    const slip = (bobZyt / 2n) * 500n / 10000n;
+    await zyt.connect(bob).approve(await pool.getAddress(), sellAmt);
+    await mining.connect(bob).sellZyt(sellAmt);
+    const slip = sellAmt * 500n / 10000n;
     // 合约分配：m = d = slip*3/10（向下取整），burn 吸收截断残差 = slip - m - d
     const m = slip * 3000n / 10000n;
     expect(await zyt.balanceOf(root.address) - marketBefore).to.equal(m);
@@ -257,7 +291,7 @@ describe("ZYT v9", function () {
     expect((await zyt.getSellInfo(carol.address))[3]).to.be.gt(0n);
   });
 
-  it("6. 静态 2 倍出局：价格上行后卖出累计提取达 2×本金，复投解除", async function () {
+  it("6. 静态 2 倍出局：价格上行后转账折算累计提取达 2×本金，复投解除", async function () {
     await config.setUint("poolStage1USDT", 21000n * E18);
     await config.setUint("poolStage2USDT", 10000000n * E18);
     await depositOf(bob, U500, ethers.ZeroAddress);
@@ -270,12 +304,16 @@ describe("ZYT v9", function () {
     const p = await ethers.getContractAt("MiniPair", pair);
     await p.sync();
 
-    // bob 全卖 → usdtOut ≈ 4×面值 ≥ 2×本金 → 静态出局
+    // v9.2：单期卖出受档位额度（首期 20%）限制，「2 倍出局」经由转账（视同卖出，
+    // 不受日历窗约束）达成；另一条路是跨多个卖币窗口逐期卖出。
     const bal = await zyt.balanceOf(bob.address);
-    await zyt.connect(bob).approve(await pool.getAddress(), bal);
-    await mining.connect(bob).sellZyt(bal);
+    const chunk = bal * 30n / 100n;
+    await zyt.connect(bob).transfer(carol.address, chunk);
+    expect((await mining.userInfo(bob.address)).staticExited).to.equal(false); // 首笔未到线
+    await zyt.connect(bob).transfer(carol.address, chunk);
     const info = await mining.userInfo(bob.address);
     expect(info.staticExited).to.equal(true);
+    expect(info.withdrawTotal).to.be.gte(info.depositTotal * 2n);
     // 复投解除
     await depositOf(bob, U500, ethers.ZeroAddress);
     const info2 = await mining.userInfo(bob.address);
@@ -284,31 +322,33 @@ describe("ZYT v9", function () {
   });
 
   it("7. 动态额度加速释放：逐笔消耗、耗尽停发、复投恢复", async function () {
-    // 调小倍率：alice 入金 500 → 动态额度 500U（mul=1）
+    // 调小倍率：alice 入金 500 → 动态额度 500U（mul=1）；一级 7% → 30% 便于在 4 笔内耗尽
     await config.setUint("dynamicQuotaMul", 1n);
+    await config.setUint("refLevel1Rate", 3000n);
     await depositOf(alice, U500, root.address); // root 直推链上 alice（不影响 alice 收下级）
-    await depositOf(bob, U500, alice.address);  // bob 入金 → alice 收 1 代 7% = 35U，额度剩 465
+    // v9.2 单钱包累计入金上限 500U：额度耗尽需多笔入金 → 用独立钱包（一手机 N 钱包口径）
+    const wallets = (await ethers.getSigners()).slice(5, 10);
+    await depositOf(wallets[0], U500, alice.address); // 入金 500 → alice 收 30% = 150U，额度剩 350
+    expect((await mining.userInfo(alice.address)).dynamicWithdrawn).to.equal(150n * E18);
 
-    expect((await mining.userInfo(alice.address)).dynamicWithdrawn).to.equal(35n * E18);
-
-    // bob 反复入金（每次 alice 应收 35U），直到额度耗尽
-    for (let i = 0; i < 15; i++) {
-      await depositOf(bob, U500, alice.address);
-      const withdrawn = (await mining.userInfo(alice.address)).dynamicWithdrawn;
-      if (withdrawn >= 500n * E18) break;
+    for (let i = 1; i < wallets.length; i++) {
+      await depositOf(wallets[i], U500, alice.address);
+      if ((await mining.userInfo(alice.address)).dynamicWithdrawn >= U500) break;
     }
     const aInfo = await mining.userInfo(alice.address);
-    expect(aInfo.dynamicWithdrawn).to.equal(500n * E18); // 精确截断至额度上限
+    expect(aInfo.dynamicWithdrawn).to.equal(U500); // 精确截断至额度上限
     expect(aInfo.dynamicExited).to.equal(true);
-    // 耗尽后 bob 再入金：alice 不再收（转营销）
+    // 耗尽后新钱包入金：alice 不再收（该份额转营销）
     const aUsdtBefore = await usdt.balanceOf(alice.address);
-    await depositOf(bob, U500, alice.address);
+    await depositOf(wallets[4], U500, alice.address);
     expect(await usdt.balanceOf(alice.address)).to.equal(aUsdtBefore);
     // 复投解除
     await depositOf(alice, U500, root.address);
     const aInfo2 = await mining.userInfo(alice.address);
+    // v9.2 复投开新一轮：动态额度按本笔重算（不再累加），出局标记复位
     expect(aInfo2.dynamicExited).to.equal(false);
-    expect(aInfo2.dynamicQuota).to.equal(1000n * E18);
+    expect(aInfo2.dynamicQuota).to.equal(U500);
+    expect(aInfo2.dynamicWithdrawn).to.equal(0n);
   });
 
   it("8. 每日通缩：LP 报销 2%、U 回池 sync（池 U 不变）、1% 烧 + 1% 分红", async function () {
@@ -416,7 +456,8 @@ describe("ZYT v9", function () {
     expect(await zyt.balanceOf(bob.address)).to.be.gt(bBefore);
   });
 
-  it("9. 强制卖出：首收币 15 天后未卖足 20% → keeper 结算销毁（窗口去重）", async function () {
+  it("9. 窗口结算：当期无卖出活动 → 按余额 × 首期 20% 销毁（P1-13 去重）", async function () {
+    const w = await gotoWindow();
     await config.setUint("poolStage1USDT", 21000n * E18);
     await config.setUint("poolStage2USDT", 10000000n * E18);
     await depositOf(bob, U500, ethers.ZeroAddress);
@@ -425,9 +466,10 @@ describe("ZYT v9", function () {
     await mining.connect(bob).buy(U500);
 
     const bal = await zyt.balanceOf(bob.address);
+    // 窗口进行中：结算为零操作（昨日非卖币日）
     expect(await forceSell.connect(keeper).settleExpired.staticCall(bob.address)).to.equal(0n);
-    await ethers.provider.send("evm_increaseTime", [16 * DAY]);
-    await ethers.provider.send("evm_mine");
+    // 次日凌晨（15/29 日 00:30 北京）：当期零卖出 → 按余额 × 首期 20% 销毁
+    await setTime(w.ts + DAY + 1800);
     const supplyBefore = await zyt.totalSupply();
     await forceSell.connect(keeper).settleExpired(bob.address);
     expect(supplyBefore - (await zyt.totalSupply())).to.equal(bal * 2000n / 10000n);
@@ -475,16 +517,8 @@ describe("ZYT v9", function () {
   });
 
   it("12. v9.2 卖币窗口：14/28 日历窗 + 首期 20% 额度 + 窗口外禁卖 + 次日结算销毁", async function () {
-    // 时间锚点显式设定，避免依赖运行当天的真实日期（14/28 日跑与非窗口日跑行为必须一致）
-    const WINDOW_TS = Date.UTC(2026, 10, 13, 16, 0, 0) / 1000; // 2026-11-14 00:00 北京
-    const AFTER_TS = Date.UTC(2026, 10, 14, 16, 30, 0) / 1000; // 2026-11-15 00:30 北京
-    const setTime = async (t) => {
-      await ethers.provider.send("evm_setNextBlockTimestamp", [t]);
-      await ethers.provider.send("evm_mine");
-    };
-
-    await setTime(WINDOW_TS);
-    expect(await forceSell.currentWindow()).to.deep.equal([20261114n, true]);
+    const win = await gotoWindow();
+    expect(await forceSell.currentWindow()).to.deep.equal([win.id, true]);
 
     // bob 入金 → 阶段 2 买入取得 ZYT（买币路径只登记首收，不结束首期）
     await depositOf(bob, U500, ethers.ZeroAddress);
@@ -506,14 +540,14 @@ describe("ZYT v9", function () {
     // 额度内卖出成功：额度锁存 + 已卖累计 + 首期结束
     await mining.connect(bob).sellZyt(quota / 2n);
     const w = await forceSell.windows(bob.address);
-    expect(w[0]).to.equal(20261114n);
+    expect(w[0]).to.equal(win.id);
     expect(w[1]).to.equal(quota);
     expect(w[2]).to.equal(quota / 2n);
     expect(await forceSell.firstSellDone(bob.address)).to.equal(true);
 
-    // 窗口外（15 日）禁卖
-    await setTime(AFTER_TS);
-    expect(await forceSell.pendingSettleWindow()).to.equal(20261114n);
+    // 窗口外（15/29 日）禁卖
+    await setTime(win.ts + DAY + 1800);
+    expect(await forceSell.pendingSettleWindow()).to.equal(win.id);
     await expect(mining.connect(bob).sellZyt(1n * E18)).to.be.revertedWith("FS: window closed");
 
     // 次日凌晨 keeper 结算：未卖足额度部分销毁（无宽限期）

@@ -6,12 +6,14 @@
  *   A2 越权调用矩阵（onlyMining / onlyDeflation / not pool / 二次建池 / owner 越权）
  *   A3 多钱包转账绕静态 2 倍（受赠上限约束，无法跨钱包放大提取额度）
  *   A4 零成本刷额度（额度严格 = 5×累计真实入金）
- *   A5 出局后行为边界（分红权重归零，币仍可卖，复投恢复）
+ *   A5 出局后行为边界（分红权重归零 + 双轨禁卖，复投恢复）
  *   A6 通缩防护（同日重复、超限抽池、越权抽池）
  *   A7 推荐自环/互推（无自奖励、无循环放大）
- *   A8 强卖窗口转移（接收方独立计时，转出方基数按现余额）
+ *   A8 卖币窗口为全局日历（转账视同卖出占额度，接收方无独立计时）
  *
  * 说明：断言基于合约不变量，任何一条被绕过即测试失败。
+ * v9.2（2026-10-14）：卖出仅限每月 14/28 日历窗，单期额度 = 余额 × 档位（首期 20% / 常规 10% /
+ *   达入金 60% 后 2%）；本套件用 gotoWindow() 相对推进链上时钟，避免固定锚点随运行日期漂移。
  */
 const { expect } = require("chai");
 const { ethers } = require("hardhat");
@@ -26,6 +28,36 @@ const ZERO = ethers.ZeroAddress;
 
 async function ts() {
   return (await ethers.provider.getBlock("latest")).timestamp;
+}
+
+/**
+ * v9.2 卖币窗口（北京时间 14/28 日全天，UTC+8）：
+ * 把链上时钟推进到「下一个卖币日」的 00:00，返回 { ts, id, dom }。
+ * 相对推进而非固定绝对时刻：Hardhat 链上时钟跨用例单调递增且跨文件保持。
+ */
+async function gotoWindow(opts = {}) {
+  const want = opts.dom || null;
+  const now = await ts();
+  for (let d = 1; d <= 70; d++) {
+    const t = now + d * DAY;
+    const bj = new Date((t + 8 * 3600) * 1000);
+    const dom = bj.getUTCDate();
+    if ((dom !== 14 && dom !== 28) || (want && dom !== want)) continue;
+    const dayStart = Date.UTC(bj.getUTCFullYear(), bj.getUTCMonth(), bj.getUTCDate() - 1, 16, 0, 0) / 1000;
+    const target = dayStart + (opts.offsetDays || 0) * DAY;
+    await setTime(target);
+    return {
+      ts: target,
+      id: BigInt(bj.getUTCFullYear() * 10000 + (bj.getUTCMonth() + 1) * 100 + dom),
+      dom,
+    };
+  }
+  throw new Error("gotoWindow: 70 天内未找到卖币日");
+}
+
+async function setTime(t) {
+  await ethers.provider.send("evm_setNextBlockTimestamp", [t]);
+  await ethers.provider.send("evm_mine", []);
 }
 
 describe("ZYT v9.1 攻击向量", function () {
@@ -127,6 +159,7 @@ describe("ZYT v9.1 攻击向量", function () {
   // ============ A1 闪电贷式 peak 操纵 ============
   it("A1. peak 操纵：拉高峰值后撤出，攻击者自身卖出成本不降反升", async function () {
     await openStage2();
+    await gotoWindow(); // v9.2：卖出仅限 14/28 日历窗
     await depositOf(alice, U500, ZERO);
     await depositOf(bob, U500, ZERO);
 
@@ -136,9 +169,9 @@ describe("ZYT v9.1 攻击向量", function () {
     const peakAfterBuy = await pool.peakPoolUSDT();
     expect(peakAfterBuy).to.be.gt(peakBefore); // 峰值被抬高
 
-    // 攻击者立即撤出（卖出）→ 池 U 回落，但峰值不下降（只升不降）
+    // 攻击者立即撤出（卖出首期额度上限 = 余额 × 20%）→ 池 U 回落，但峰值不下降（只升不降）
     const bobZyt = await zyt.balanceOf(bob.address);
-    await sellOf(bob, bobZyt / 2n);
+    await sellOf(bob, bobZyt * 2000n / 10000n);
     expect(await pool.peakPoolUSDT()).to.be.gte(peakAfterBuy); // 峰值不回退
 
     // 核心断言：回落后滑点档 ≥ 基档，攻击者无法通过「拉高再撤」取得低成本
@@ -189,6 +222,7 @@ describe("ZYT v9.1 攻击向量", function () {
   // ============ A3 多钱包绕静态 2 倍 ============
   it("A3. 多钱包绕静态 2 倍：转出方计入提取，接收方上限仅受赠值", async function () {
     await openStage2();
+    await gotoWindow(); // v9.2：卖出仅限 14/28 日历窗
     await depositOf(alice, U500, ZERO); // 入金 500 → 静态上限 1000
     await depositOf(bob, U500, ZERO);
     await buyOf(bob, 400n * E18);
@@ -215,8 +249,8 @@ describe("ZYT v9.1 攻击向量", function () {
     const carolBal = await zyt.balanceOf(carol.address);
     expect(carolBal).to.equal(move); // 实收全额（税由发送方另扣）
 
-    // 3) carol 全卖 → 累计提取不会超过其上限（受 AMM 折价影响只会更低）
-    await sellOf(carol, carolBal);
+    // 3) carol 卖出首期额度（余额 × 20%）→ 累计提取不会超过其上限（受 AMM 折价影响只会更低）
+    await sellOf(carol, carolBal * 2000n / 10000n);
     const carolWithdraw = (await mining.userInfo(carol.address))[1];
     expect(carolWithdraw).to.be.lte(carolCap);
     const carolCapAfter = (await mining.transferValueOf(carol.address))[1];
@@ -226,7 +260,8 @@ describe("ZYT v9.1 攻击向量", function () {
 
   // ============ A4 零成本刷额度 ============
   it("A4. 额度严格等于 5×累计真实入金，零成本或重复调用无法增加", async function () {
-    await depositOf(alice, U500, ZERO);
+    const U200 = 200n * E18;
+    await depositOf(alice, U200, ZERO);
     let info = await mining.userInfo(alice.address);
     expect(info[3]).to.equal(info[0] * 5n); // dynamicQuota = 5×depositTotal
 
@@ -236,45 +271,51 @@ describe("ZYT v9.1 攻击向量", function () {
     await usdt.connect(alice).faucet(U500 * 10n);
     await usdt.connect(alice).approve(await mining.getAddress(), U500 * 10n);
     await expect(mining.connect(alice).deposit(U500 + 1n, ZERO)).to.be.revertedWith("Mining: amount range");
+    // v9.2：入金须为 100U 倍数（150U 非倍数 → 拒绝）
+    await expect(mining.connect(alice).deposit(150n * E18, ZERO)).to.be.revertedWith("Mining: step mismatch");
 
-    // 再次真实入金 → 额度按新入金叠加（线性，无倍增杠杆）
-    await depositOf(alice, U500, ZERO);
+    // 再次真实入金 → 额度按新入金线性叠加（无倍增杠杆）
+    await depositOf(alice, U200, ZERO);
     info = await mining.userInfo(alice.address);
-    expect(info[0]).to.equal(1000n * E18);
-    expect(info[3]).to.equal(5000n * E18);
+    expect(info[0]).to.equal(400n * E18);
+    expect(info[3]).to.equal(2000n * E18);
     expect(info[3]).to.equal(info[0] * 5n);
+
+    // v9.2：单钱包累计入金上限 500U（400 + 200 = 600 > 500 → 拒绝）
+    await usdt.connect(alice).faucet(U200);
+    await usdt.connect(alice).approve(await mining.getAddress(), U200);
+    await expect(mining.connect(alice).deposit(U200, ZERO)).to.be.revertedWith("Mining: over cap");
   });
 
   // ============ A5 出局后行为边界 ============
-  it("A5. 出局后分红权重归零；币仍可卖；复投全额恢复", async function () {
+  it("A5. 出局后禁卖且分红权重归零；复投全额恢复", async function () {
     await openStage2();
+    await gotoWindow();
     await depositOf(alice, U500, ZERO);
     await buyOf(alice, 500n * E18);
+
+    // 价格上行（注入 4 倍池 U + sync），使转账折算足以越过静态 2 倍线
+    await usdt.transfer(pair, SEED_USDT * 4n);
+    const p = await ethers.getContractAt("MiniPair", pair);
+    await p.sync();
+
+    // v9.2：单期卖出受档位额度限制，2 倍出局经由转账（视同卖出）达成
     const zBal = await zyt.balanceOf(alice.address);
-    const half = zBal / 2n;
-    await sellOf(alice, half);
-    await sellOf(alice, half);
+    await zyt.connect(alice).transfer(bob.address, zBal * 30n / 100n);
+    await zyt.connect(alice).transfer(bob.address, zBal * 30n / 100n);
 
     const info = await mining.userInfo(alice.address);
-    // 无论是否触发 2 倍（AMM 折价下通常未达），出局状态与算力口径必须自洽
-    const [dep, wd, power, , , , staticExited] = info;
-    if (staticExited) {
-      expect(power).to.equal(0n); // 出局 → 算力归零（不再享分红权重）
-    } else {
-      expect(power).to.be.gt(0n);
-      expect(wd).to.be.lt(dep * 2n); // 未出局时提取额必然小于 2 倍线
-    }
+    expect(info[6]).to.equal(true); // staticExited：累计提取 ≥ 2×本金
+    expect(info[1]).to.be.gte(info[0] * 2n);
+    expect(info[2]).to.equal(0n);   // 出局 → 算力归零（不再享分红权重）
 
-    // 出局后仍可卖出剩余持仓（财产权保留），累计提取继续累加但不再获得分红权重
+    // v9.2 拍板：双轨出局任一到线即禁卖（旧行为「出局后仍可卖」已作废）
     const rest = await zyt.balanceOf(alice.address);
-    if (rest > 0n) {
-      await sellOf(alice, rest);
-      const after = await mining.userInfo(alice.address);
-      expect(after[1]).to.be.gt(wd);
-      if (staticExited) expect(after[2]).to.equal(0n);
-    }
+    expect(rest).to.be.gt(0n);
+    await zyt.connect(alice).approve(await pool.getAddress(), rest);
+    await expect(mining.connect(alice).sellZyt(rest)).to.be.revertedWith("Mining: static exited");
 
-    // 复投 → 出局状态与算力恢复
+    // 复投 → 出局标记复位、算力恢复（新一轮账本）
     await depositOf(alice, U500, ZERO);
     const refreshed = await mining.userInfo(alice.address);
     expect(refreshed[6]).to.equal(false);
@@ -305,12 +346,14 @@ describe("ZYT v9.1 攻击向量", function () {
 
   // ============ A7 推荐自环 / 互推 ============
   it("A7. 推荐自环与互推：无自奖励、无循环放大", async function () {
+    // v9.2 单钱包累计入金上限 500U：本用例按 200U 构造，便于同一钱包二次入金
+    const U200 = 200n * E18;
     // 自环：alice 以自己为上级
-    await usdt.connect(alice).faucet(U500);
-    await usdt.connect(alice).approve(await mining.getAddress(), U500);
+    await usdt.connect(alice).faucet(U200);
+    await usdt.connect(alice).approve(await mining.getAddress(), U200);
     let selfOk = true;
     try {
-      await mining.connect(alice).deposit(U500, alice.address);
+      await mining.connect(alice).deposit(U200, alice.address);
     } catch {
       selfOk = false;
     }
@@ -322,16 +365,16 @@ describe("ZYT v9.1 攻击向量", function () {
     }
 
     // 互推：bob 以 alice 为上级，alice 无法再以 bob 为上级（首次绑定即固化）
-    await usdt.connect(bob).faucet(U500);
-    await usdt.connect(bob).approve(await mining.getAddress(), U500);
-    await mining.connect(bob).deposit(U500, alice.address);
+    await usdt.connect(bob).faucet(U200);
+    await usdt.connect(bob).approve(await mining.getAddress(), U200);
+    await mining.connect(bob).deposit(U200, alice.address);
     const bobRef = await referral.referrerOf(bob.address);
     expect(bobRef.toLowerCase()).to.equal(alice.address.toLowerCase());
 
     // bob 再次入金并传 alice（不变），传自己无效：上级关系不可被自己改写
-    await usdt.connect(bob).faucet(U500);
-    await usdt.connect(bob).approve(await mining.getAddress(), U500);
-    await mining.connect(bob).deposit(U500, bob.address);
+    await usdt.connect(bob).faucet(U200);
+    await usdt.connect(bob).approve(await mining.getAddress(), U200);
+    await mining.connect(bob).deposit(U200, bob.address);
     expect((await referral.referrerOf(bob.address)).toLowerCase()).to.equal(alice.address.toLowerCase());
 
     // 循环检测：alice 的上级链中不含 bob（无环）
@@ -340,49 +383,45 @@ describe("ZYT v9.1 攻击向量", function () {
   });
 
   // ============ A8 强卖窗口转移 ============
-  it("A8. 强卖窗口：转出方基数按现余额，接收方独立计时", async function () {
+  it("A8. 窗口为全局日历：转账视同卖出占用当期额度，接收方无独立计时", async function () {
     await openStage2();
+    const g = await gotoWindow();
     await depositOf(alice, U500, ZERO);
-    await buyOf(alice, 300n * E18); // 让 alice 真实持有 ZYT（首收登记）
-    const t0 = await ts();
+    await buyOf(alice, 300n * E18); // alice 真实持币（首收登记）
 
-    // alice 首收币时间已登记
-    const [, , , aliceFirst] = await zyt.getSellInfo(alice.address);
-    expect(aliceFirst).to.be.gt(0n);
-
-    // alice 转一半给 carol（新钱包）
+    // alice 转一半给 carol（新钱包）：转账视同卖出，占用 alice 当期额度
     const bal = await zyt.balanceOf(alice.address);
-    await zyt.connect(alice).transfer(carol.address, bal / 2n);
+    const half = bal / 2n;
+    await zyt.connect(alice).transfer(carol.address, half);
 
-    // carol 收到即启动自己的强卖计时（不继承 alice 的起点，也不会被清零）
-    const [, , , carolFirst] = await zyt.getSellInfo(carol.address);
-    expect(carolFirst).to.be.gt(0n);
-    expect(carolFirst).to.be.gte(aliceFirst);
-    expect(carolFirst).to.be.gte(BigInt(t0) - 5n);
+    const w = await forceSell.windows(alice.address);
+    expect(w[0]).to.equal(g.id);                 // 已锁存当期窗口
+    expect(w[1]).to.equal(bal * 2000n / 10000n); // 额度 = 转账前余额 × 首期 20%
+    expect(w[2]).to.equal(half);                 // 已卖进度含转出量（转账视同卖出）
+    expect(await forceSell.firstSellDone(alice.address)).to.equal(true); // 首期由转出终结
 
-    // 转出方应卖基数按转后余额计算；且转账视同卖出 → 已计入强卖进度（抵充窗口 1 的 20%）
-    await ethers.provider.send("evm_increaseTime", [15 * DAY + 60]);
-    await ethers.provider.send("evm_mine", []);
-    const aliceNow = await zyt.balanceOf(alice.address);
-    const [, aliceSoldZyt] = await zyt.getSellInfo(alice.address);
-    // 卖出统计包含转出的那一半（转账视同卖出）
-    expect(aliceSoldZyt).to.be.gte(aliceNow); // 至少含转出量
+    // 转出已达 50% > 20% 额度 → 当期不可再卖（不可多卖）
+    await zyt.connect(alice).approve(await pool.getAddress(), 1n * E18);
+    await expect(mining.connect(alice).sellZyt(1n * E18)).to.be.revertedWith("FS: over quota");
 
-    const before = await zyt.balanceOf(alice.address);
-    await expect(forceSell.connect(keeper).settleExpired(alice.address)).to.not.be.reverted;
-    const burnedAlice = before - (await zyt.balanceOf(alice.address));
-    // alice 已通过转出抵充窗口 1，结算不再销毁差额（无重复惩罚）
-    expect(burnedAlice).to.equal(0n);
+    // 接收方 carol 无独立计时：窗口为全局日历，carol 自身无任何窗口锁存
+    expect(await forceSell.firstSellDone(carol.address)).to.equal(false);
+    expect((await forceSell.windows(carol.address))[0]).to.equal(0n);
 
-    // 接收方 carol 独立计时（自己的首收起点），同样到期未卖 → 按自己余额销毁 20%
+    // 次日凌晨（15/29 日）结算
+    await setTime(g.ts + DAY + 1800);
+    const aliceBefore = await zyt.balanceOf(alice.address);
+    await forceSell.connect(keeper).settleExpired(alice.address);
+    expect(await zyt.balanceOf(alice.address)).to.equal(aliceBefore); // 已超额，无欠账可烧
+
     const carolBal = await zyt.balanceOf(carol.address);
     expect(carolBal).to.be.gt(0n);
-    const carolRequired = carolBal * 2000n / 10000n; // 窗口 1：20%
-    await expect(forceSell.connect(keeper).settleExpired(carol.address)).to.not.be.reverted;
-    expect(carolBal - (await zyt.balanceOf(carol.address))).to.equal(carolRequired);
+    await forceSell.connect(keeper).settleExpired(carol.address);
+    // carol 当期零活动 → 按自身余额 × 首期 20% 销毁
+    expect(carolBal - (await zyt.balanceOf(carol.address))).to.equal(carolBal * 2000n / 10000n);
     // 二次结算幂等（同窗口不重复销毁）
     const carolAfter = await zyt.balanceOf(carol.address);
-    await expect(forceSell.connect(keeper).settleExpired(carol.address)).to.not.be.reverted;
+    await forceSell.connect(keeper).settleExpired(carol.address);
     expect(await zyt.balanceOf(carol.address)).to.equal(carolAfter);
   });
 });
