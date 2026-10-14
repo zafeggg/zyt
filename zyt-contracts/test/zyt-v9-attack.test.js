@@ -157,7 +157,7 @@ describe("ZYT v9.1 攻击向量", function () {
   });
 
   // ============ A1 闪电贷式 peak 操纵 ============
-  it("A1. peak 操纵：拉高峰值后撤出，攻击者自身卖出成本不降反升", async function () {
+  it("A1. peak 操纵：拉高峰值不再影响滑点档位（基准=当日 08:01 快照池 U）", async function () {
     await openStage2();
     await gotoWindow(); // v9.2：卖出仅限 14/28 日历窗
     await depositOf(alice, U500, ZERO);
@@ -174,20 +174,17 @@ describe("ZYT v9.1 攻击向量", function () {
     await sellOf(bob, bobZyt * 2000n / 10000n);
     expect(await pool.peakPoolUSDT()).to.be.gte(peakAfterBuy); // 峰值不回退
 
-    // 核心断言：回落后滑点档 ≥ 基档，攻击者无法通过「拉高再撤」取得低成本
-    const cur = await pool.poolUSDT();
-    const peak = await pool.peakPoolUSDT();
-    const reduction = (peak - cur) * 10000n / peak;
-    const rate = await pool.getCurrentSlippage();
-    if (reduction >= 100n) {
-      expect(rate).to.be.gt(500n); // 回落达 1% → 档位升高
-    } else {
-      expect(rate).to.equal(500n);
-    }
-    // 档位函数与池状态自洽（无外部可写入的操纵入口）
-    const expectRate = reduction >= 400n ? 8000n : reduction >= 300n ? 4000n
-      : reduction >= 200n ? 2000n : reduction >= 100n ? 1000n : 500n;
-    expect(rate).to.equal(expectRate);
+    // v9.2 核心断言：滑点基准已换成「当日 08:01 快照池 U」，峰值不再参与档位判定。
+    // 尚未发生快照时基准为 0 → 直接回落基准滑点 5%，
+    // 攻击者「拉高再撤」在自身卖出成本上不产生任何档位效应。
+    expect(await pool.snapshotPoolUSDT()).to.equal(0n);
+    expect(await pool.getCurrentSlippage()).to.equal(500n);
+
+    // 快照写入后基准锁定为快照时刻的真实池 U；池 U 不低于基准 → 仍为基准滑点（无升档）
+    await deflation.connect(keeper).dailySnapshot(U500);
+    const base = await pool.snapshotPoolUSDT();
+    expect(base).to.be.gt(0n);
+    expect(await pool.getCurrentSlippage()).to.equal(500n);
   });
 
   // ============ A2 越权调用矩阵 ============

@@ -478,19 +478,36 @@ describe("ZYT v9", function () {
     expect(await zyt.totalSupply()).to.equal(supplyMid); // P1-13 去重
   });
 
-  it("10. 滑点档位：基准=峰值池U；入金抬峰后卖出可升档", async function () {
-    expect(await pool.getCurrentSlippage()).to.equal(500n);
-    await depositOf(alice, U500, ethers.ZeroAddress);
-    // peak 已抬升至入金后高点；卖出消耗池 U，reduction 达 1% → 10%
+  it("10. 滑点档位：基准=当日 08:01 快照池U（非历史峰值），池 U 跌幅分档", async function () {
+    expect(await pool.getCurrentSlippage()).to.equal(500n); // 未快照 → 基准滑点
     await config.setUint("poolStage1USDT", 21000n * E18);
     await config.setUint("poolStage2USDT", 10000000n * E18);
     await depositOf(bob, U500, ethers.ZeroAddress);
     await usdt.connect(bob).faucet(U500);
     await usdt.connect(bob).approve(await mining.getAddress(), U500);
     await mining.connect(bob).buy(U500);
-    const peak = await pool.peakPoolUSDT();
+
+    // 快照基准 = 当日 08:01 的池 U
+    await deflation.connect(keeper).dailySnapshot(U500);
+    const base = await pool.snapshotPoolUSDT();
+    expect(base).to.be.gt(0n);
+    expect(await pool.getCurrentSlippage()).to.equal(500n); // 池 U ≥ 基准 → 基准档
+
+    // 逐窗口卖出（首期 20%，其后常规 10%）把池 U 压到基准下方 ≥1%
+    for (let i = 0; i < 8; i++) {
+      const curNow = await pool.poolUSDT();
+      if (curNow * 10000n <= base * 9900n) break; // 已跌 ≥1%
+      await gotoWindow();
+      const bal = await zyt.balanceOf(bob.address);
+      if (bal === 0n) break;
+      const cap = bal * (i === 0 ? 2000n : 1000n) / 10000n;
+      await zyt.connect(bob).approve(await pool.getAddress(), cap);
+      await mining.connect(bob).sellZyt(cap);
+    }
+
     const cur = await pool.poolUSDT();
-    const reduction = (peak - cur) * 10000n / peak;
+    const reduction = (base - cur) * 10000n / base;
+    expect(reduction).to.be.gte(100n); // 跌幅已过 1% 档
     const expected = reduction >= 400n ? 8000n : reduction >= 300n ? 4000n
       : reduction >= 200n ? 2000n : reduction >= 100n ? 1000n : 500n;
     expect(await pool.getCurrentSlippage()).to.equal(expected);
@@ -562,5 +579,43 @@ describe("ZYT v9", function () {
     const supplyMid = await zyt.totalSupply();
     await forceSell.connect(keeper).settleExpired(bob.address);
     expect(await zyt.totalSupply()).to.equal(supplyMid);
+  });
+
+  it("13. v9.2 治理补池 injectZyt：权限闭合 + 单次 5% 上限 + 只加 ZYT 侧不动池 U", async function () {
+    await config.setUint("poolStage1USDT", 21000n * E18);
+    await config.setUint("poolStage2USDT", 10_000_000n * E18);
+    await depositOf(bob, U500, ethers.ZeroAddress);
+    await usdt.connect(bob).faucet(U500);
+    await usdt.connect(bob).approve(await mining.getAddress(), U500);
+    await mining.connect(bob).buy(U500);
+
+    // treasury = root（模拟 W3 营销 Safe：已白名单，转入无税；Safe 不直接转 pair，走本合约拉币）
+    const seed = await zyt.balanceOf(bob.address);
+    await zyt.connect(bob).transfer(root.address, seed);
+    await pool.setTreasury(root.address);
+    expect(await pool.treasury()).to.equal(root.address);
+
+    const zytResBefore = await pool.poolZYT();
+    const usdtResBefore = await pool.poolUSDT();
+    const cap = zytResBefore * 500n / 10000n; // 单次上限 = 池内 ZYT 的 5%
+    const amount = seed / 2n;
+    expect(amount).to.be.lte(cap); // 正常额度内
+
+    // 越权：既非 owner 也非 treasury
+    await expect(pool.connect(alice).injectZyt(1n)).to.be.revertedWith("Pool: not auth");
+    // 超单次上限（上限校验先于拉币，余额不足也能命中）
+    await zyt.connect(root).approve(await pool.getAddress(), seed);
+    await expect(pool.connect(root).injectZyt(cap + 1n)).to.be.revertedWith("Pool: over inject cap");
+    // 未 approve → 拉币失败
+    await zyt.connect(root).approve(await pool.getAddress(), 0n);
+    await expect(pool.connect(root).injectZyt(1n)).to.be.reverted;
+
+    // 正常注入：只加厚 ZYT 侧，池 U 不变；累计留痕
+    await zyt.connect(root).approve(await pool.getAddress(), seed);
+    await pool.connect(root).injectZyt(amount);
+    expect(await pool.poolZYT()).to.equal(zytResBefore + amount);
+    expect(await pool.poolUSDT()).to.equal(usdtResBefore);
+    expect(await pool.totalZytInjected()).to.equal(amount);
+    expect(await zyt.balanceOf(root.address)).to.equal(seed - amount);
   });
 });

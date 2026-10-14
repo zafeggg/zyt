@@ -15,7 +15,10 @@ import "./interfaces/UniV2.sol";
  *           LP 凭证全额转黑洞销毁（NBDAO buyAndAddLP 模式的真池实现）
  *         - 买入：USDT → pair.swap → ZYT 直达用户（阶段 1 禁买；阶段 2 由 Mining 校验买额）
  *         - 卖出：ZYT 滑点档位（30% 营销 / 30% 分红池 / 40% 销毁）→ 净额 swap → USDT 给用户
- *         - 滑点档位基准（v9 拍板）：max(初始池U, 历史峰值池U)；当前池 U 较基准减 1/2/3/4% → 10/20/40/80%
+ *         - 滑点档位基准（v9.2 拍板）：当日 08:01 通缩快照的底池 U（snapshotPoolUSDT）；
+ *           当前池 U 较基准减 1/2/3/4% → 10/20/40/80%，不低于基准 → 5%
+ *           （历史峰值 peakPoolUSDT 降级为纯统计，不再参与档位判定）
+ *         - v9.2 治理补池：injectZyt（treasury 先 approve，本合约拉币入池 + sync，单次 ≤ 池内 ZYT 5%）
  *         - 每日通缩：锁仓合约报销 2% 初始 LP → 抽出 ZYT_a/U_b；ZYT_a 1% 烧 + 1% 分红，
  *           U_b 直接转回 pair 并 sync（净效果只减池内 ZYT，池 U 不变，价格单边上行）
  *         - swapGate：swap 前置位/后清位，ZYTToken 据此放行「流出 pair」路径
@@ -34,10 +37,15 @@ contract ZYTPoolManager is Ownable, ReentrancyGuard {
 
     // ---------- 快照与基准 ----------
     uint256 public snapshotPrice;       // 每日 08:01 快照锁定价（记账：转账计值/强卖/额度）
-    uint256 public snapshotPoolUSDT;    // 每日快照的池 USDT（统计）
+    uint256 public snapshotPoolUSDT;    // 每日 08:01 快照池 USDT（v9.2：滑点档位基准）
     uint256 public lastSnapshotAt;
-    uint256 public peakPoolUSDT;        // 历史峰值池 USDT（滑点档位基准，max(初始, 峰值)）
+    uint256 public peakPoolUSDT;        // 历史峰值池 USDT（v9.2 降级为纯统计，不再作滑点基准）
     uint256 public totalLpBurned;       // 累计销毁 LP（入金 60% 凭证）
+
+    // ---------- v9.2 治理补池 ----------
+    address public treasury;            // 补池资金来源（W3 营销 Safe；需先 approve 本合约）
+    uint256 public totalZytInjected;    // 累计补池 ZYT
+    uint256 public constant INJECT_CAP_BPS = 500; // 单次上限 = 池内 ZYT 的 5%
 
     uint256 public dividendPoolZyt;     // 分红池（ZYT）：通缩 1% + 卖币滑点 30% + 转账税 30%
     uint256 public reserveUSDT;         // 自持 USDT（组 LP 残留，兑付兜底储备）
@@ -49,6 +57,8 @@ contract ZYTPoolManager is Ownable, ReentrancyGuard {
     event Deflated(uint256 burned, uint256 dividend, uint256 usdtResynced);
     event SlippageCollected(uint256 rate, uint256 toMarket, uint256 toDividend, uint256 toBurn);
     event DividendAccrued(uint256 amount);
+    event TreasurySet(address indexed treasury);
+    event ZytInjected(address indexed from, uint256 amount, uint256 poolZytAfter, uint256 totalInjected);
 
     modifier onlyMining() {
         require(msg.sender == mining, "Pool: only mining");
@@ -91,6 +101,33 @@ contract ZYTPoolManager is Ownable, ReentrancyGuard {
 
     function setDeflation(address _deflation) external onlyOwner {
         deflation = _deflation;
+    }
+
+    /// @notice 设置补池资金来源（W3 营销 Safe；须先 approve 本合约再调 injectZyt）
+    function setTreasury(address _treasury) external onlyOwner {
+        treasury = _treasury;
+        emit TreasurySet(_treasury);
+    }
+
+    /**
+     * @notice 治理补池：从 treasury 拉 ZYT 注入 pair 并 sync（不组 LP，直接加厚底池 ZYT 侧）
+     * @dev 部署顺序红线（清单第八章第 2 条）：Safe 不可直接 transfer 到 pair（被卖闸 revert），
+     *      必须走本函数拉币；须先 setWhiteList(treasury)（红线第 1 条），否则 Safe 收到的 ZYT 会被
+     *      登记强卖义务。单次上限 = 池内 ZYT 的 5%，防误操作砸池。
+     * @param amount 注入的 ZYT 数量
+     */
+    function injectZyt(uint256 amount) external nonReentrant returns (uint256) {
+        require(msg.sender == config.owner() || msg.sender == treasury, "Pool: not auth");
+        require(treasury != address(0), "Pool: treasury unset");
+        require(amount > 0, "Pool: zero");
+        (uint256 zRes, ) = _reserves();
+        require(amount <= zRes * INJECT_CAP_BPS / 10000, "Pool: over inject cap");
+
+        IERC20(zytToken).transferFrom(treasury, pair, amount);
+        IUniswapV2Pair(pair).sync();
+        totalZytInjected += amount;
+        emit ZytInjected(treasury, amount, zRes + amount, totalZytInjected);
+        return amount;
     }
 
     // ---------- 视图 ----------
@@ -139,11 +176,19 @@ contract ZYTPoolManager is Ownable, ReentrancyGuard {
         return 3;
     }
 
-    /// @notice 当前滑点档位（基点）：池 USDT 较峰值基准的减少比例分档
+    /**
+     * @notice 当前滑点档位（基点）：池 USDT 较「当日 08:01 快照池 U」的减少比例分档
+     * @dev v9.2（2026-10-13 拍板）：基准由历史峰值 peakPoolUSDT 改为 snapshotPoolUSDT
+     *      （每日 08:01 通缩快照时的底池 U）。峰值只升不降，会被「拉高再撤」长期锚在高位，
+     *      导致正常回落的用户被动升档（A1）；快照基准每日重置，且最多 24h 更新一次，
+     *      操纵面收敛为「快照时刻的真实池 U」。
+     *      基准为 0（尚未发生任何快照）或池 U 不低于基准 → 基准滑点 5%。
+     */
     function getCurrentSlippage() public view returns (uint256) {
         (, uint256 uRes) = _reserves();
-        if (peakPoolUSDT == 0 || uRes >= peakPoolUSDT) return config.baseSlippage();
-        uint256 reduction = (peakPoolUSDT - uRes) * 10000 / peakPoolUSDT;
+        uint256 base = snapshotPoolUSDT;
+        if (base == 0 || uRes >= base) return config.baseSlippage();
+        uint256 reduction = (base - uRes) * 10000 / base;
         if (reduction >= 400) return config.slippageTier4();   // 80%
         if (reduction >= 300) return config.slippageTier3();   // 40%
         if (reduction >= 200) return config.slippageTier2();   // 20%
