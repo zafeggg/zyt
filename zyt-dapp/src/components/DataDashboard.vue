@@ -15,10 +15,6 @@
         <div class="label">{{ $t("home.totalBurned") }}</div>
       </div>
       <div class="col">
-        <div class="num">{{ today }}</div>
-        <div class="label">{{ $t("home.todayDeposit") }}</div>
-      </div>
-      <div class="col">
         <div class="num gold">{{ user ? fmtCompact(user.power) : "--" }}</div>
         <div class="label">{{ $t("home.myPower") }}</div>
       </div>
@@ -46,8 +42,9 @@ const props = defineProps<{
 }>();
 
 // v14：真值接入（keeper /stats 扩展）；链上直连降级分支无此数据 → 保持 "--" 不冒充 0
-// 2026-09-25 修复：原实现对 "0" 也判空（显示 --），导致「总销毁数 / 今日入单」在有真实 0 值时误显示无数据。
+// 2026-09-25 修复：原实现对 "0" 也判空（显示 --），导致「总销毁数」在有真实 0 值时误显示无数据。
 //   现按「无数据（undefined/null/空串）→ --；有值（含 0）→ 正常格式化」处理。
+// 2026-10-13 运营调整：移除「今日入单」展示列（数据字段保留在 pool 类型与 keeper API，仅前端不渲染）。
 function humanOf(wei?: string): string | null {
   if (wei === undefined || wei === null || wei === "") return null;
   try {
@@ -59,10 +56,6 @@ function humanOf(wei?: string): string | null {
 const burned = computed(() => {
   const h = humanOf(props.pool.burned);
   return h === null ? "--" : fmtCompact(h);
-});
-const today = computed(() => {
-  const h = humanOf(props.pool.todayDeposit);
-  return h === null ? "--" : fmtNum(h, 2);
 });
 const networkPower = computed(() => {
   const h = humanOf(props.pool.networkPower);
@@ -80,11 +73,6 @@ function fmtCompact(n: string, d = 2): string {
   if (v >= 1e8) return (v / 1e8).toFixed(d) + "亿";
   if (v >= 1e4) return (v / 1e4).toFixed(d) + "万";
   return v.toFixed(0);
-}
-function fmtNum(n: string, d = 4): string {
-  const v = parseFloat(n);
-  if (isNaN(v)) return "0";
-  return v >= 1000 ? v.toFixed(2) : v.toFixed(d);
 }
 </script>
 
