@@ -68,6 +68,21 @@
         <div v-if="balanceErr" class="flow-err">
           {{ $t("swap.insufficientBalance", { need: fmtNum(amountNum), bal: balance }) }}
         </div>
+        <!-- v9.2 入金规则：100U 倍数 / 单笔 100-500U / 单钱包累计 500U -->
+        <div v-if="depositErrKey" class="flow-err">
+          {{
+            $t(depositErrKey, {
+              min: 100,
+              max: 500,
+              step: 100,
+              left: fmtNum(depositCapLeft),
+            })
+          }}
+        </div>
+        <div v-else-if="isNewRound" class="flow-note">{{ $t("swap.reinvestNote") }}</div>
+        <div v-else class="flow-note">
+          {{ $t("swap.depositCapNote", { used: fmtNum(depositTotalNum), left: fmtNum(depositCapLeft) }) }}
+        </div>
         <div class="auth-row">
           <span>{{ $t("swap.approveStatus") }}：</span>
           <b :class="approved ? 'ok' : 'no'">{{ approved ? $t("swap.approved") : $t("swap.notApproved") }}</b>
@@ -94,7 +109,7 @@
         v-if="approved && busy !== 'deposit'"
         block
         type="primary"
-        :disabled="!walletReady || balanceErr || busy !== ''"
+        :disabled="!walletReady || balanceErr || depositErrKey !== '' || busy !== ''"
         class="action-btn"
         @click="doDeposit"
       >
@@ -158,7 +173,17 @@
       <div class="flow-panel">
         <div class="flow-row"><span>{{ $t("swap.sellAmount") }}</span><b>{{ fmtNum(amountNum) }} ZYT</b></div>
         <div class="flow-row sub">{{ $t("swap.sellNote", { rate: slippage, pct: reductionPct }) }}</div>
+        <!-- v9.2 卖币窗口：每月 14/28 日（北京时间）全天可卖，窗口外禁卖；额度 = 窗口首次活动时余额 × 档位 -->
+        <div class="flow-row sub">
+          <span>{{ $t("swap.sellWindowLabel") }}</span>
+          <b :class="sellWindowOpen ? 'ok' : 'no'">{{ sellWindowText }}</b>
+        </div>
+        <div class="flow-row sub">
+          <span>{{ $t("swap.sellQuotaLabel") }}</span>
+          <b>{{ fmtNum(sellRemainNum) }} ZYT（{{ tierPctText }}）</b>
+        </div>
         <div v-if="balanceErr" class="flow-err">{{ $t("swap.insufficientBalance", { need: fmtNum(amountNum), bal: balance }) }}</div>
+        <div v-if="sellErrKey" class="flow-err">{{ $t(sellErrKey, { n: fmtNum(sellRemainNum) }) }}</div>
         <div class="auth-row">
           <span>{{ $t("swap.approveStatus") }}：</span>
           <b :class="zytApproved ? 'ok' : 'no'">{{ zytApproved ? $t("swap.approved") : $t("swap.notApproved") }}</b>
@@ -181,7 +206,7 @@
         v-if="zytApproved && busy !== 'sell'"
         block
         type="primary"
-        :disabled="!walletReady || balanceErr || busy !== ''"
+        :disabled="!walletReady || balanceErr || sellErrKey !== '' || busy !== ''"
         class="action-btn"
         @click="doSell"
       >
@@ -209,7 +234,7 @@ import { showFailToast } from "vant";
 import { useI18n } from "vue-i18n";
 import SlippageBadge from "./SlippageBadge.vue";
 import { useWallet } from "../composables/useWallet";
-import { getContracts, setSigner } from "../composables/useContracts";
+import { getContracts, getForceSellContract, setSigner } from "../composables/useContracts";
 import { useTxRecords, newTxId, type TxRecord, type TxType, type TxStatus } from "../composables/useTxRecords";
 import { useInvite } from "../composables/useInvite";
 import { currentChain } from "../config";
@@ -243,6 +268,15 @@ const allowanceZyt = ref<bigint>(0n);
 const powerWei = ref<bigint>(0n);
 const buyQuotaWei = ref<bigint>(0n);
 const dynamicExitedRef = ref(false);
+// ===== v9.2 入金规则校验所需状态 =====
+const staticExitedRef = ref(false);
+const depositTotalWei = ref<bigint>(0n);
+// ===== v9.2 卖币窗口状态（ForceSell 直连） =====
+const sellWindowId = ref(0);
+const sellWindowOpen = ref(false);
+const sellTierBps = ref(0);
+const sellQuotaWei = ref<bigint>(0n);
+const sellSoldWei = ref<bigint>(0n);
 const tradePriceWei = ref<bigint>(0n);
 const miningAddr = ref("");
 // 流程执行中标记："" 空闲 / approve / deposit / buy / zytApprove / sell
@@ -284,6 +318,36 @@ const buyReady = computed(
 // ===== sell 侧派生 =====
 const zytApproved = computed(() => allowanceZyt.value >= amtWei.value);
 
+// ===== v9.2 入金规则校验（100U 倍数 / 单笔 100-500U / 单钱包累计 500U / 复投开新一轮） =====
+const depositTotalNum = computed(() => Number(formatEther(depositTotalWei.value)));
+/** 复投开新一轮：静态 2 倍或动态 5 倍任一出局后可全额入金（账本按本笔重算） */
+const isNewRound = computed(() => staticExitedRef.value || dynamicExitedRef.value);
+const depositCapLeft = computed(() => Math.max(0, 500 - depositTotalNum.value));
+const depositErrKey = computed(() => {
+  if (mode.value !== "deposit" || amountNum.value <= 0) return "";
+  if (amountNum.value % 100 !== 0) return "swap.depositStepErr";
+  if (amountNum.value < 100 || amountNum.value > 500) return "swap.depositRangeErr";
+  if (!isNewRound.value && amountNum.value > depositCapLeft.value) return "swap.depositCapErr";
+  return "";
+});
+
+// ===== v9.2 卖币窗口额度（窗口外禁卖 + 当期额度上限，与合约同口径） =====
+const sellRemainWei = computed(() =>
+  sellQuotaWei.value > sellSoldWei.value ? sellQuotaWei.value - sellSoldWei.value : 0n
+);
+const sellRemainNum = computed(() => Number(formatEther(sellRemainWei.value)));
+const tierPctText = computed(() => `${sellTierBps.value / 100}%`);
+const sellWindowText = computed(() =>
+  sellWindowOpen.value ? t("swap.sellWindowOpen", { id: sellWindowId.value }) : t("swap.sellWindowClosedShort")
+);
+const sellOverQuota = computed(() => sellRemainWei.value > 0n && amtWei.value > sellRemainWei.value);
+const sellErrKey = computed(() => {
+  if (mode.value !== "sell" || amountNum.value <= 0) return "";
+  if (!sellWindowOpen.value) return "swap.sellWindowClosed";
+  if (sellOverQuota.value) return "swap.sellOverQuota";
+  return "";
+});
+
 // ===== 数据加载 =====
 async function loadChainState() {
   if (!address.value) return;
@@ -304,6 +368,32 @@ async function loadChainState() {
     powerWei.value = BigInt(info[2] ?? 0);
     buyQuotaWei.value = BigInt(info[5] ?? 0);
     dynamicExitedRef.value = !!info[7];
+    // v9.2：累计入金（500U 上限校验）与静态出局标记（复投判定）
+    depositTotalWei.value = BigInt(info[0] ?? 0);
+    staticExitedRef.value = !!info[6];
+    // v9.2：卖币窗口（直连 ForceSell；keeper 口径同源，此处置于链上实时口径）
+    const fsC = getForceSellContract();
+    if (fsC) {
+      const { zyt: zytC } = getContracts(false);
+      const [win, tier, latch, zbal] = await Promise.all([
+        fsC.currentWindow(),
+        fsC.tierBpsOf(address.value),
+        fsC.windows(address.value),
+        zytC.balanceOf(address.value),
+      ]);
+      sellWindowId.value = Number(win[0]);
+      sellWindowOpen.value = Boolean(win[1]);
+      sellTierBps.value = Number(tier);
+      const latchId = Number(latch[0]);
+      // 锁存命中（本窗口已有活动）用锁存额度；否则额度 = 当前余额 × 档位（与合约同口径）
+      if (latchId !== 0 && latchId === Number(win[0])) {
+        sellQuotaWei.value = BigInt(latch[1]);
+        sellSoldWei.value = BigInt(latch[2]);
+      } else {
+        sellQuotaWei.value = (BigInt(zbal) * BigInt(tier)) / 10000n;
+        sellSoldWei.value = 0n;
+      }
+    }
     // sell 授权（zyt → pool）
     if (mode.value === "sell") {
       const { zyt } = getContracts(false);

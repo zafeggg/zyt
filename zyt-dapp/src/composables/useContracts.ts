@@ -6,6 +6,7 @@ import { CONFIG_ABI } from "../abis/config";
 import { ZYT_ABI } from "../abis/zyt";
 import { USDT_ABI } from "../abis/usdt";
 import { CREATOR_ABI } from "../abis/creator";
+import { FORCESELL_ABI } from "../abis/forcesell";
 
 let signer: Signer | null = null;
 let provider: Provider | null = null;
@@ -50,6 +51,22 @@ export function getContracts(rw = false) {
     zyt: new Contract(c.zyt, ZYT_ABI, rw ? s! : p),
     usdt: new Contract(c.usdt, USDT_ABI, rw ? s! : p),
   };
+}
+
+/**
+ * v9.2：卖出窗口合约（ZYTForceSell）只读实例。
+ * 用于前端直连读取窗口状态（currentWindow / tierBpsOf / windows），
+ * 与 keeper /force-sell 接口同源口径；地址为空时返回 null，调用方跳过窗口展示。
+ */
+export function getForceSellContract(): Contract | null {
+  const addr = currentChain().contracts.forceSell;
+  if (!addr) return null;
+  try {
+    const { provider: p } = conn(false);
+    return new Contract(addr, FORCESELL_ABI, p);
+  } catch {
+    return null;
+  }
 }
 
 /**
