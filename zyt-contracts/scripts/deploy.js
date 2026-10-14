@@ -12,7 +12,7 @@ const path = require("node:path");
  *
  * 流程：USDT → ZYTConfig → ZYTToken → ZYTLiquidityCreator → ZYTPoolManager
  *       → ZYTReferral → ZYTForceSell → ZYTMining(+ZYTCompute lib) → ZYTDeflation
- *       → 接线 → createInitialPool（2.1 万 USDT + 21 亿 ZYT 组池，LP 锁仓）
+ *       → 接线 → createInitialPool（铸 33 亿 = 21 亿组池 + 12 亿转 Treasury；2.1 万 USDT，LP 锁仓）
  *       → setPair ×3 → pair 白名单
  *
  * 用法：
@@ -30,7 +30,8 @@ const path = require("node:path");
  *   - MARKET_ADDRESS / TECHNICAL_ADDRESS / KEEPER_ADDRESS 填 Safe 多签或 EOA
  */
 
-const ZYT_MAX = 2_100_000_000n * 10n ** 18n;    // 21 亿（全量一次铸出）
+const TOTAL_ZYT = 33_000_000_000n * 10n ** 18n; // v9.2 全量 33 亿（一次铸出）
+const POOL_ZYT = 2_100_000_000n * 10n ** 18n;   // 其中 21 亿注入底池（初始价不变），余额 12 亿转 Treasury
 const SEED_USDT = 21_000n * 10n ** 18n;         // 初始底池 2.1 万 USDT
 const BLACK_HOLE = "0x000000000000000000000000000000000000dEaD";
 
@@ -182,6 +183,8 @@ async function main() {
   // ---------- 10. 接线 ----------
   const market = process.env.MARKET_ADDRESS || deployer.address;
   const technical = process.env.TECHNICAL_ADDRESS || deployer.address;
+  // v9.2：新增供应（12 亿 ZYT）接收方 = W3 营销 Safe；必须先白名单再建池（红线第 1 条）
+  const treasury = process.env.TREASURY_ADDRESS || market;
 
   await config.setAddress("marketAddress", market);
   await config.setAddress("technicalAddress", technical);
@@ -242,10 +245,15 @@ async function main() {
     }
   }
   await waitAllowance(usdt, deployer.address, creatorAddr, SEED_USDT, "USDT→Creator");
-  await (await creator.createInitialPool(ZYT_MAX, SEED_USDT)).wait();
+  await creator.setTreasury(treasury); // 必须先于建池：Creator 内置白名单红线守护
+  console.log("Treasury (12亿 ZYT 接收方):", treasury);
+  await (await creator.createInitialPool(TOTAL_ZYT, POOL_ZYT, SEED_USDT)).wait();
   const pairAddr = await creator.pair();
   console.log("Initial pool created:", pairAddr);
-  console.log("  ZYT seeded:", ethers.formatUnits(ZYT_MAX, 18), "USDT seeded:", ethers.formatUnits(SEED_USDT, 18));
+  console.log("  ZYT total:", ethers.formatUnits(TOTAL_ZYT, 18),
+              "| 注入底池:", ethers.formatUnits(POOL_ZYT, 18),
+              "| 转 Treasury:", ethers.formatUnits(TOTAL_ZYT - POOL_ZYT, 18),
+              "| USDT seeded:", ethers.formatUnits(SEED_USDT, 18));
 
   // ---------- 12. pair 接线（三处：config / zyt / pool）+ 白名单 ----------
   await config.setAddress("pair", pairAddr);
@@ -313,7 +321,13 @@ async function main() {
       ZYTLiquidityCreator: [zytAddr, usdtAddr, factoryAddr, BLACK_HOLE],
     },
     libraries: { "contracts/ZYTCompute.sol:ZYTCompute": computeAddr },
-    seed: { zyt: ethers.formatUnits(ZYT_MAX, 18), usdt: ethers.formatUnits(SEED_USDT, 18), lpLocked: locked.toString() },
+    seed: {
+      zytTotal: ethers.formatUnits(TOTAL_ZYT, 18),
+      zytPool: ethers.formatUnits(POOL_ZYT, 18),
+      usdt: ethers.formatUnits(SEED_USDT, 18),
+      treasury: treasury,
+      lpLocked: locked.toString(),
+    },
   };
   const outDir = path.join(__dirname, "..", "deployments");
   fs.mkdirSync(outDir, { recursive: true });

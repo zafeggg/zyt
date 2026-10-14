@@ -18,7 +18,8 @@ const { ethers } = require("hardhat");
 
 const DEAD = "0x000000000000000000000000000000000000dEaD";
 const E18 = 10n ** 18n;
-const ZYT_MAX = 2_100_000_000n * E18;
+const TOTAL_ZYT = 33_000_000_000n * E18;   // v9.2 全量：21 亿组池 + 12 亿 Treasury
+const POOL_ZYT = 2_100_000_000n * E18;
 const SEED_USDT = 21_000n * E18;
 const DAY = 86400;
 const U500 = 500n * E18;
@@ -147,9 +148,10 @@ describe("ZYT v9.1 漏洞检测", function () {
     await forceSell.setKeeper(keeper.address);
     await forceSell.setMining(await mining.getAddress()); // v9.2：窗口复位授权（复投 / 迁移）
 
+    await creator.setTreasury(root.address); // 模拟 W3 营销 Safe（上方已白名单，红线第 1 条）
     await usdt.faucet(SEED_USDT * 100n);
     await usdt.approve(await creator.getAddress(), SEED_USDT);
-    await creator.createInitialPool(ZYT_MAX, SEED_USDT);
+    await creator.createInitialPool(TOTAL_ZYT, POOL_ZYT, SEED_USDT);
     pair = await creator.pair();
     await config.setAddress("pair", pair);
     await zyt.setPair(pair);
@@ -216,11 +218,11 @@ describe("ZYT v9.1 漏洞检测", function () {
   });
 
   // ================= AUDIT-3 =================
-  it("AUDIT-3: owner 可提高 totalSupplyCap 并更换 minter 实现增发（21 亿非代码强制）", async function () {
+  it("AUDIT-3: owner 可提高 totalSupplyCap 并更换 minter 实现增发（33 亿非代码强制）", async function () {
     const supplyBefore = await zyt.totalSupply();
-    expect(supplyBefore).to.equal(ZYT_MAX);
+    expect(supplyBefore).to.equal(TOTAL_ZYT);
 
-    // 1. 放宽上限（初始 cap == 21 亿，已铸满）
+    // 1. 放宽上限（初始 cap == 33 亿，已铸满）
     await config.setUint("totalSupplyCap", 2_100_000_000_000n * E18); // 2.1 万亿
 
     // 2. 部署第二个 Creator（未被 initialized 锁定的新实例）并设为 minter
@@ -232,13 +234,14 @@ describe("ZYT v9.1 漏洞检测", function () {
     // gate 放行条件为 `msg.sender == pool || msg.sender == creator`，需把新实例设为 creator
     await zyt.setCreator(await creator2.getAddress());
 
-    // 3. 二次"建池"：铸出新的 10 亿枚（pair 已存在，直接复用 getPair 分支）
+    // 3. 二次"建池"：再铸 10 亿（5 亿组池 + 5 亿转 treasury；pair 已存在，直接复用 getPair 分支）
     const extra = 1_000_000_000n * E18;
+    await creator2.setTreasury(root.address); // root 已在白名单，满足红线守护
     await usdt.approve(await creator2.getAddress(), 100n * E18);
-    await creator2.createInitialPool(extra, 100n * E18);
+    await creator2.createInitialPool(extra, extra / 2n, 100n * E18);
 
     const supplyAfter = await zyt.totalSupply();
-    expect(supplyAfter).to.equal(ZYT_MAX + extra);
+    expect(supplyAfter).to.equal(TOTAL_ZYT + extra);
 
     // 池内 ZYT 被瞬间增厚 → 价格被砸低
     const [zRes, uRes] = await pool.getReservesPublic();

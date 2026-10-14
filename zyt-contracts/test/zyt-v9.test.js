@@ -9,7 +9,8 @@ const { ethers } = require("hardhat");
 
 const DEAD = "0x000000000000000000000000000000000000dEaD";
 const E18 = 10n ** 18n;
-const ZYT_MAX = 2_100_000_000n * E18;
+const TOTAL_ZYT = 33_000_000_000n * E18;   // v9.2 全量：21 亿组池 + 12 亿 Treasury
+const POOL_ZYT = 2_100_000_000n * E18;     // 注入底池部分（底池 2.1 万 U → 初始价不变）
 const SEED_USDT = 21_000n * E18;
 const DAY = 86400;
 const U500 = 500n * E18;
@@ -141,10 +142,11 @@ describe("ZYT v9", function () {
     await forceSell.setKeeper(keeper.address);
     await forceSell.setMining(await mining.getAddress()); // v9.2：窗口复位授权（复投 / 迁移）
 
-    // ---- 建池 ----
+    // ---- 建池（v9.2：铸 33 亿，21 亿组池 + 12 亿转 Treasury） ----
+    await creator.setTreasury(root.address); // 模拟 W3 营销 Safe（上方已白名单，红线第 1 条）
     await usdt.faucet(SEED_USDT * 100n);
     await usdt.approve(await creator.getAddress(), SEED_USDT);
-    await creator.createInitialPool(ZYT_MAX, SEED_USDT);
+    await creator.createInitialPool(TOTAL_ZYT, POOL_ZYT, SEED_USDT);
     pair = await creator.pair();
     await config.setAddress("pair", pair);
     await zyt.setPair(pair);
@@ -152,13 +154,17 @@ describe("ZYT v9", function () {
     await zyt.setWhiteList(pair, true);
   });
 
-  it("1. 建池：全量铸造、LP 锁仓、初始价 0.00001U", async function () {
-    expect(await zyt.totalSupply()).to.equal(ZYT_MAX);
+  it("1. 建池：全量 33 亿铸造（21 亿组池 + 12 亿 Treasury）、LP 锁仓、初始价 0.00001U", async function () {
+    expect(await zyt.totalSupply()).to.equal(TOTAL_ZYT);
     expect(await creator.lockedLiquidity()).to.be.gt(0n);
     const [zRes, uRes] = await pool.getReservesPublic();
-    expect(zRes).to.equal(ZYT_MAX);
+    expect(zRes).to.equal(POOL_ZYT); // 底池 ZYT 仍为 21 亿
     expect(uRes).to.equal(SEED_USDT);
-    expect(await pool.getPrice()).to.equal(SEED_USDT * E18 / ZYT_MAX); // 1e13
+    expect(await pool.getPrice()).to.equal(SEED_USDT * E18 / POOL_ZYT); // 初始价不变
+    // 新增供应 12 亿转入 Treasury（模拟 W3 营销 Safe），且未被登记强卖义务
+    expect(await zyt.balanceOf(root.address)).to.equal(TOTAL_ZYT - POOL_ZYT);
+    expect(await forceSell.firstReceiveTime(root.address)).to.equal(0n);
+    expect(await creator.totalZytSeeded()).to.equal(POOL_ZYT);
   });
 
   it("2. 入金 500U：40% 直发 + 60% 组 LP 销毁 + 算力/买额/动态额度", async function () {
@@ -611,11 +617,12 @@ describe("ZYT v9", function () {
     await expect(pool.connect(root).injectZyt(1n)).to.be.reverted;
 
     // 正常注入：只加厚 ZYT 侧，池 U 不变；累计留痕
+    const rootBefore = await zyt.balanceOf(root.address); // 含建池时转入的 12 亿 Treasury
     await zyt.connect(root).approve(await pool.getAddress(), seed);
     await pool.connect(root).injectZyt(amount);
     expect(await pool.poolZYT()).to.equal(zytResBefore + amount);
     expect(await pool.poolUSDT()).to.equal(usdtResBefore);
     expect(await pool.totalZytInjected()).to.equal(amount);
-    expect(await zyt.balanceOf(root.address)).to.equal(seed - amount);
+    expect(await zyt.balanceOf(root.address)).to.equal(rootBefore - amount);
   });
 });

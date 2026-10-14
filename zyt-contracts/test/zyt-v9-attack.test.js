@@ -20,7 +20,8 @@ const { ethers } = require("hardhat");
 
 const DEAD = "0x000000000000000000000000000000000000dEaD";
 const E18 = 10n ** 18n;
-const ZYT_MAX = 2_100_000_000n * E18;
+const TOTAL_ZYT = 33_000_000_000n * E18;   // v9.2 全量：21 亿组池 + 12 亿 Treasury
+const POOL_ZYT = 2_100_000_000n * E18;
 const SEED_USDT = 21_000n * E18;
 const DAY = 86400;
 const U500 = 500n * E18;
@@ -146,9 +147,10 @@ describe("ZYT v9.1 攻击向量", function () {
     await forceSell.setKeeper(keeper.address);
     await forceSell.setMining(await mining.getAddress()); // v9.2：窗口复位授权（复投 / 迁移）
 
+    await creator.setTreasury(root.address); // 模拟 W3 营销 Safe（上方已白名单，红线第 1 条）
     await usdt.faucet(SEED_USDT * 100n);
     await usdt.approve(await creator.getAddress(), SEED_USDT);
-    await creator.createInitialPool(ZYT_MAX, SEED_USDT);
+    await creator.createInitialPool(TOTAL_ZYT, POOL_ZYT, SEED_USDT);
     pair = await creator.pair();
     await config.setAddress("pair", pair);
     await zyt.setPair(pair);
@@ -200,7 +202,7 @@ describe("ZYT v9.1 攻击向量", function () {
     await expect(creator.connect(alice).skimDeflation(200)).to.be.revertedWith("Creator: not pool");
     await usdt.connect(alice).faucet(SEED_USDT);
     await usdt.connect(alice).approve(await creator.getAddress(), SEED_USDT);
-    await expect(creator.connect(alice).createInitialPool(ZYT_MAX, SEED_USDT)).to.be.reverted;
+    await expect(creator.connect(alice).createInitialPool(TOTAL_ZYT, POOL_ZYT, SEED_USDT)).to.be.reverted;
 
     // Token 权限：minter / ledger / pool 仅 owner
     await expect(zyt.connect(alice).setMinter(alice.address)).to.be.reverted;

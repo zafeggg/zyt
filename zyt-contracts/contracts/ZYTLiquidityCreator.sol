@@ -8,9 +8,11 @@ import "./interfaces/UniV2.sol";
 
 /**
  * @title ZYTLiquidityCreator（初始建池 + LP 持有 + 通缩执行）
- * @notice v9 双重身份：
- *         1. 初始建池：铸造 21 亿 ZYT（一次性的全量供应）+ 收取 2.1 万 USDT，
- *            直接创建 ZYT/USDT 真实 pair 并注入，LP 凭证由本合约持有
+ * @notice v9.2 双重身份：
+ *         1. 初始建池：一次铸出全量 33 亿 ZYT（21 亿注入 pair 组池 + 12 亿转 Treasury）
+ *            + 收取 2.1 万 USDT，直接创建 ZYT/USDT 真实 pair 并注入，LP 凭证由本合约持有
+ *            （底池仍为 2.1 万 U + 21 亿 ZYT，初始价不变）
+ *            部署顺序红线：treasury 必须先加入 ZYTToken 白名单再调用 createInitialPool
  *         2. 通缩执行器：每日被 PoolManager 调用 skimDeflation，报销 2% LP
  *            （removeLiquidity）并把抽出的 ZYT/USDT 转交 Pool 处理（U 回池 sync）
  *         安全设计：
@@ -26,6 +28,7 @@ contract ZYTLiquidityCreator is Ownable, ReentrancyGuard {
     address public immutable blackHole;
     address public pair;                // ZYT/USDT 交易对（建池后固化）
     address public poolManager;         // ZYTPoolManager（唯一 skimDeflation 调用方）
+    address public treasury;            // v9.2：新增供应（12 亿 ZYT）接收方（W3 营销 Safe）
 
     // 本合约当前持有的 LP 凭证量。恒等于 IERC20(pair).balanceOf(address(this))，
     // 由 createInitialPool / skimDeflation / withdrawLp 三处同步维护。
@@ -39,6 +42,8 @@ contract ZYTLiquidityCreator is Ownable, ReentrancyGuard {
     bool public initialized;
 
     event InitialPoolCreated(address indexed pair, uint256 zytIn, uint256 usdtIn, uint256 liquidity);
+    event TreasuryChanged(address indexed treasury);
+    event TreasurySeeded(address indexed treasury, uint256 amount);
     event PoolManagerChanged(address indexed poolManager);
     event DeflationSkimmed(uint256 lpBurned, uint256 zytAmt, uint256 usdtAmt);
     event LpWithdrawn(address indexed to, uint256 amount);
@@ -66,25 +71,45 @@ contract ZYTLiquidityCreator is Ownable, ReentrancyGuard {
         emit PoolManagerChanged(_pool);
     }
 
+    /// @notice 设置新增供应接收方（W3 营销 Safe；必须先加入 ZYTToken 白名单）
+    function setTreasury(address _treasury) external onlyOwner {
+        require(_treasury != address(0), "Creator: zero addr");
+        treasury = _treasury;
+        emit TreasuryChanged(_treasury);
+    }
+
     /**
      * @notice 初始建池（部署时手动调用一次）：
-     *         铸出全量 ZYT（21 亿）+ 收取初始 USDT（2.1 万）→ 创建/获取 pair →
-     *         两侧注入 → LP 由本合约持有（owner 可提取；常态用于每日 2% 递减式通缩报销）
-     * @param zytAmount 全量 ZYT（21 亿枚）
+     *         铸出全量 ZYT（33 亿）其中 poolZyt（21 亿）注入 pair 组池、余额（12 亿）转 treasury；
+     *         收取初始 USDT（2.1 万）→ 创建/获取 pair → 两侧注入 →
+     *         LP 由本合约持有（owner 可提取；常态用于每日 2% 递减式通缩报销）
+     * @dev 部署顺序红线（清单第八章第 1 条）：treasury 必须先 setWhiteList 再调用本函数。
+     *      顺序颠倒则 12 亿持仓被 ZYTToken._onReceive 登记强卖义务：多签无法自签卖币，
+     *      keeper 每期销毁未卖足部分，12 亿将在数月内被烧光，且无清理函数，只能重新部署。
+     * @param totalZyt 全量 ZYT（33 亿枚，含底池与新增供应）
+     * @param poolZyt 注入底池的 ZYT（21 亿枚；底池 2.1 万 U → 初始价不变）
      * @param usdtAmount 初始 USDT（2.1 万枚；调用方需先 approve）
      * @return pairAddr 交易对地址
      */
-    function createInitialPool(uint256 zytAmount, uint256 usdtAmount)
+    function createInitialPool(uint256 totalZyt, uint256 poolZyt, uint256 usdtAmount)
         external
         onlyOwner
         nonReentrant
         returns (address pairAddr)
     {
         require(!initialized, "Creator: initialized");
-        require(zytAmount > 0 && usdtAmount > 0, "Creator: zero amount");
+        require(totalZyt > 0 && usdtAmount > 0, "Creator: zero amount");
+        require(poolZyt > 0 && poolZyt <= totalZyt, "Creator: bad split");
+
+        uint256 toTreasury = totalZyt - poolZyt;
+        if (toTreasury > 0) {
+            require(treasury != address(0), "Creator: treasury unset");
+            // 红线守护：Treasury 未入白名单即建池 → 12 亿持仓被登记强卖义务
+            require(IZYTTokenWL(zyt).isWhiteList(treasury), "Creator: treasury not whitelisted");
+        }
 
         // 1. 全量铸造 ZYT 到本合约（此后无任何 mint 路径，总供应恒减）
-        IZYTTokenMint(zyt).mintTo(address(this), zytAmount);
+        IZYTTokenMint(zyt).mintTo(address(this), totalZyt);
 
         // 2. 创建或获取 pair
         pairAddr = IUniswapV2Factory(factory).getPair(zyt, usdt);
@@ -94,18 +119,24 @@ contract ZYTLiquidityCreator is Ownable, ReentrancyGuard {
         pair = pairAddr;
         initialized = true;
 
-        // 3. 两侧注入
+        // 3. 新增供应转 Treasury（本合约在白名单 → 转账 hook 直接放行：无税、不登记强卖）
+        if (toTreasury > 0) {
+            IERC20(zyt).transfer(treasury, toTreasury);
+            emit TreasurySeeded(treasury, toTreasury);
+        }
+
+        // 4. 两侧注入
         IERC20(usdt).transferFrom(msg.sender, address(this), usdtAmount);
-        IERC20(zyt).transfer(pairAddr, zytAmount);
+        IERC20(zyt).transfer(pairAddr, poolZyt);
         IERC20(usdt).transfer(pairAddr, usdtAmount);
 
-        // 4. LP 铸给本合约，永久锁仓
+        // 5. LP 铸给本合约，永久锁仓
         uint256 liquidity = IUniswapV2Pair(pairAddr).mint(address(this));
         lockedLiquidity = liquidity;
-        totalZytSeeded = zytAmount;
+        totalZytSeeded = poolZyt;
         totalUsdtSeeded = usdtAmount;
 
-        emit InitialPoolCreated(pairAddr, zytAmount, usdtAmount, liquidity);
+        emit InitialPoolCreated(pairAddr, poolZyt, usdtAmount, liquidity);
     }
 
     /**
@@ -185,4 +216,9 @@ contract ZYTLiquidityCreator is Ownable, ReentrancyGuard {
 
 interface IZYTTokenMint {
     function mintTo(address to, uint256 amount) external;
+}
+
+/// @notice ZYTToken 白名单查询（红线守护：treasury 必须先入白名单）
+interface IZYTTokenWL {
+    function isWhiteList(address) external view returns (bool);
 }
