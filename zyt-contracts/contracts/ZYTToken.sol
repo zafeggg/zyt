@@ -8,7 +8,7 @@ import "./interfaces/IZYTForceSell.sol";
 
 /**
  * @title ZYTToken（众赢币）
- * @notice v9 主代币。初始底池 21 亿枚由 Creator 一次铸出组真池，此后无任何 mint 路径。
+ * @notice v9.2 主代币。全量 33 亿枚由 Creator 一次铸出（21 亿组真池 + 12 亿转 Treasury），此后无任何 mint 路径。
  *         真池 gate 模式（唯一交易通道 = ZYTPoolManager）：
  *         - ZYT 流入 pair（卖出 / 加 LP）：require msg.sender 为 pool 或 creator（锁仓合约），
  *           用户无法直接向 pair 转 ZYT 卖出，也无法用 Router 绕过（Router 主动拉币时 msg.sender = Router 被拒）
@@ -105,7 +105,7 @@ contract ZYTToken is ERC20, Ownable {
         emit WhiteListSet(addr, enabled);
     }
 
-    /// @notice 铸造（v9 仅 Creator 建池铸 21 亿一次，受 totalSupplyCap 保险丝限制）
+    /// @notice 铸造（v9.2：仅 Creator 建池铸 33 亿一次（21 亿组池 + 12 亿 Treasury），受 totalSupplyCap 保险丝限制）
     function mintTo(address to, uint256 amount) external onlyMinter {
         require(
             configAddr != address(0) && totalSupply() + amount <= ZYTConfig(configAddr).totalSupplyCap(),
