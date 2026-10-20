@@ -1,6 +1,17 @@
-# 众赢币（ZYT）技术方案 v7（冻结版）
+# ZYT 技术方案 v9.2b（现行版 · 2026-10-20）
 
-> ## ⚠️ v8 口径变更说明（2026-09-22）
+> ## ⚠️ 阅读顺序（先看这里）
+>
+> 本文档第 0–8 章为 **v7 / v8 历史存档**（GST 双币、proxy、`buyWhitelistEnabled`、算力兑换、每日新 mint 等均已废弃），
+> 仅作决策追溯，**不可作为开发依据**。现行口径只看两处：
+>
+> 1. 本文档末尾 **第 10 章《v9.2b 现行设计》**
+> 2. 《ZYT合约接口参考》§8 参数表
+>
+> 历史章节中最容易误用的几处：GST 全链移除（不存在 GST 计价层）；滑点不再以「GST 数量 / 历史峰值」为基准；
+> 不存在买入白名单（买币门槛 = 阶段门控 + 买额）；总量为 **33 亿**（21 亿组池 + 12 亿 Treasury），非 21 亿。
+
+> ## ⚠️ v8 口径变更说明（2026-09-22，历史存档）
 >
 > 本文档主体为 v7 冻结版，以下九项已变更。合约实现以《合约接口参考》与源码为准，冲突时以新版口径为准。
 >
@@ -735,27 +746,92 @@ mapping(address => uint256) public userIndex;       // 去重索引
 
 ---
 
-## v9 完整设计（2026-09-24，待实施，替代 v8 作为新开发基准）
+## 10. v9.2b 现行设计（2026-10-20，本文件唯一有效设计口径）
 
-> 本节约等于 v9 改造方案。范式：弃 GST，改 USDT↔ZYT 直换单币模型。v7/v8 文档主体仅作历史参考，冲突以本节为准。合约尚未重部署，当前链上仍为 v8（10 合约含 GST）。
+> 替代第 0–8 章全部经济口径。真池单币模型（USDT↔ZYT），共 10 个合约（含 ZYTLiquidityCreator 与新增 ZYTSwap）。
 
-### v9.1 与 v8 的关键差异
-| # | 项 | v8 | v9 |
+### 10.1 与 v7/v8/v9.1 的口径变化
+
+| # | 项 | 旧口径 | 现行（v9.2b） |
 |---|---|---|---|
-| 1 | 代币结构 | USDT→GST→ZYT 双币 | USDT↔ZYT 单币直换，GST 删除 |
-| 2 | 底池 | GST/ZYT 簿记 + Creator 建池 | 真实 ZYT/USDT Pancake 池，初始 2.1万U+21亿ZYT 组池，LP 交由 Creator 持有抽通缩 |
-| 3 | 入金 40% | USDT 直发（30%代数+10%技术） | 同，USDT 直发 |
-| 4 | 兑换路径 | 算力兑换 ZYT | 直接 swap：U→Z 买 / Z→U 卖 |
-| 5 | 滑点基准 | 底池 GST 减少% | 底池 USDT 减少%（初始/峰值基准） |
-| 6 | 合约数 | 10（含 GSTToken、ZYTLiquidityCreator） | 8（删 GSTToken；Creator 改建 ZYT/USDT 池并持有 LP） |
-| 7 | 出局口径 | 静态2倍=提取≥2×本金 | 静态2倍=累计提取价值(含转出按价计)≥2×本金；动态5倍=推荐额度消耗至5×本金 |
+| 1 | 代币结构 | USDT→GST→ZYT 双币 | USDT↔ZYT 单币直换，GST 全链移除 |
+| 2 | 总量 | 21 亿 | **33 亿** = 21 亿组池 + 12 亿 Treasury（W3 营销 Safe） |
+| 3 | 滑点基准 | GST 数量 / 历史峰值 / 当日快照比例 | **固定 2.1 万 U 基准 + 每日 08:01 日环比定档** |
+| 4 | 滑点档位 | 1/2/3/4% | **0.2 / 0.6 / 1.2 / 2.4%**（= 42/126/252/504 U） |
+| 5 | 卖币窗口 | 15 天 × 4 期 | **每月 14 / 28 日**（北京时间）全天，窗口外禁卖 |
+| 6 | 卖币额度 | 余额 × 固定比例 | 窗口首次活动余额 × 档位（首期 20% / 常规 10% / 60% 后按在玩分 10% 或 2%） |
+| 7 | 入金 | 无倍数与累计上限 | 100U 倍数、单笔 100–500U、单钱包累计 500U；任一额度用完才可复投 |
+| 8 | 出局 | 静态/动态各自独立 | **双向联动**：任一出局另一方同步结束，出局禁卖 |
+| 9 | 迁移 | 未定义 | 一次性迁移（非 proxy）：`setUserData` 批量回填 + `setLaunchDay` 继承 + 旧币 1:1 兑换 14 天 |
 
-### v9.2 架构决策（7 项，已拍板）
-1. 真实 ZYT/USDT Pancake 池；初始 2.1万U+21亿ZYT 组池；LP 交由 Creator 持有（仅池合约可每日抽 2% 通缩份额；v9.1 起 owner 可经 `withdrawLp` 提取，上线后 owner 为 W2 治理多签）；每笔入金 60% 组 LP 后凭证转黑洞销毁（落实「并销毁」，永不撤出）。
-2. 入金 40% USDT 直发（30%代数+10%技术），不参与 ZYT 通胀。
-3. 强制卖出 keeper 定时触发 settleExpired，逾期自动销毁未卖差额。
-4. 买币门槛（1000-2000万档）：入单即给买额（入单 1000U → 买 1000U 额度）。
-5. 滑点档位基准 = 初始/峰值池 USDT（max(初始2.1万U, 历史峰值)）；当前 < 基准×(1−1/2/3/4%) 触发 10/20/40/80%。
+### 10.2 参数总表（全部可由多签调整，无需重新部署）
+
+- 总量与入金：`zytMaxSupply=33亿`、`totalSupplyCap=33亿`、`minDeposit=100U`、`maxDeposit=500U`、`accountDepositCap=500U`、`depositStep=100U`
+- 分配：`marketingRate=4000`（30% 代数 + 10% 技术）、`poolRate=6000`、`powerRate=10000`、`dailyCompoundRate=100`
+- 出局：`staticExitMul=2`、`dynamicQuotaMul=5`
+- 滑点：`baseSlippage=500`、`slippageTier1..4=1000/2000/4000/8000`、`slippageDropBase=21000U`、`slippageDropBps1..4=20/60/120/240`
+- 卖币档位：`tierFirstBps=2000`、`tierStepBps=1000`、`tierAfter60Bps=200`、`tier60Bps=6000`
+- 阶段：`poolStage1USDT=1000万`、`poolStage2USDT=2000万`、`buyQuotaRate=10000`
+- 通缩：`deflationRate=200`、`deflationFloor=500万枚`、`deflationLpRate=200`、`snapshotTime=28860`
+- 推荐：`refLevel1Rate=700`、`refLevel2Rate=200`、`refLevel3Rate=50`、`refTechnicalRate=1000`、`refDepth=20`
+- 转账：`transferSlippage=1000`
+
+### 10.3 滑点：每日 08:01 日环比定档、当日锁定
+
+```
+减少量 = 上次快照池U − 本次快照池U          // 池 U 增加或持平 → 基础 5%
+减少量 × 10000 ≥ 21000U ×  20  → 10%
+                ≥ 21000U ×  60  → 20%
+                ≥ 21000U × 120  → 40%
+                ≥ 21000U × 240  → 80%
+```
+
+- 定档在 `ZYTPoolManager.updateSnapshot()`（每日 08:01，keeper → Deflation 转调）内完成，结果写入 `slippageBpsToday` 并锁定当日；`getCurrentSlippage()` 只读该值（0 = 尚未定档 → 5%）。
+- **盘中卖出不改档**：当天的大额卖出只影响次日 08:01 定出的档位。
+- 滑点分配不变：30% 营销地址 / 30% 分红池（算力加权）/ 40% 黑洞销毁。
+
+### 10.4 卖币：14/28 窗口 + 三档额度
+
+| 条件 | 每期上限 |
+|---|---|
+| 首期（未发生首卖 / 首转出） | 持币数量 × 20% |
+| 未达 60% | 持币数量 × 10% |
+| 达 60% 且「动态在玩」 | 持币数量 × 10% |
+| 达 60% 且「不在玩」 | 持币数量 × 2% |
+
+- 60% 口径：`withdrawTotal ≥ 60% × depositTotal`（withdrawTotal 含转账折算，即"卖出实收 + 按快照价折算的转出"）。
+- 「在玩」：`directDownlineDeposit(我) ≥ depositTotal`；分子为一级直推**累计入金**，只算下线自己入金（含其复投），不是我的动态额度、已拿动态收益或 30% 推荐奖励。
+- 额度在窗口首次活动时按「转账前余额」锁存，窗口内累计不得超额；未卖足部分次日凌晨（15 / 29 日）由 keeper `settleExpired` 销毁，无宽限期。
+- 转账视同卖出：计入当期已卖额度与累计卖出进度，照走 10% 税；窗口外转账不阻断、不即时销毁。
+
+### 10.5 入金与复投
+
+- 金额须为 `depositStep`（100U）倍数，单笔 100–500U，单钱包累计 ≤ 500U。
+- 复投条件：静态 2 倍（`isExited`）或动态 5 倍（`dynamicExited`）任一用完；复投重置 `depositTotal / withdrawTotal / receivedValue / buyQuota / buyUsed / dynamicQuota / dynamicWithdrawn`，保留 `powerBase / powerDay / pendingDividend`。
+- 分账：40% USDT 直发（30% 按代数逐笔消耗推荐人动态额度 + 10% 技术运维），60% 注入真池（一半 swap 买 ZYT、另一半组 LP，凭证转黑洞）。
+- 算力：入金 × 1.0，日复利 1%，`powerDay = 入金次日`（V9.1-4 修复）。
+
+### 10.6 出局与分红
+
+- 静态出局：`withdrawTotal ≥ 2 × depositTotal + receivedValue`；动态出局：`dynamicWithdrawn ≥ dynamicQuota`。
+- **双向联动**：任一方出局，另一方同步置位（动态→静态联动时补记 `exitDay`）；出局即禁卖。
+- 分红：池内每日通缩 1% 进分红池，按「当日算力 ÷ 当日全网算力」登记进 `pendingDividend`，用户自行提取；`dailyRelease` 仅记录当日全网算力，`claimReward` 已停用。
+
+### 10.7 迁移（一次性、非 proxy）
+
+1. 新旧合约并行部署；`setWhiteList(Treasury)` 必须先于 12 亿 ZYT 转入。
+2. `migrate.mjs snapshot`（Deposited 事件 + userList 并集，读旧 UserState、`dividendClaimedDay`，并按旧 Referral 的 `referrerOf` 聚合一级直推累计入金）→ `launchday` 继承 → `push`（每批 50 人 `setUserData`）→ `verify` 逐户比对。
+3. 老用户卖出窗口在迁移日重置为首期 20%；`pendingDividend` 原值回填。
+4. 停机 2–4h；旧币经 `ZYTSwap` 1:1 兑换，窗口 14 天（owner 可提前关闭），兑入旧币统一销毁。
+5. 池内资产：可回收部分仅 Creator 初始 LP（入金产生的 LP 已进黑洞不可回收），迁移前先跑 `pool-migration-audit.mjs` 盘点。
+
+### 10.8 部署与运维红线
+
+1. `setWhiteList(Treasury Safe)` 必须先于 12 亿 ZYT 转入；顺序颠倒无清理函数，只能重新部署。
+2. Safe 不可直接转 pair；补池必须走 `PoolManager.injectZyt`（单次 ≤ 池内 ZYT 的 5%，Safe 先 approve）。
+3. 白名单免税不记账，靠多签自律。
+4. `launchDay` 必须由 `setLaunchDay` 继承旧值，否则老用户复利因子归 1、算力缩水。
+5. keeper：每日 08:01 `dailySnapshot`（通缩 + 定档），15 / 29 日凌晨 `settleExpired` 结算。
 6. 转账视同卖出：扣 10% 滑点，转出额按当时价计入发送方累计提取（闭合静态2倍绕过）；接收方继承强制卖出计时、无本金基础。
 7. 动态5倍 = 入金 P→动态额度 5P U；各代推荐入金按 7%/2%/0.5% 发 USDT 并扣减额度；额度耗尽(累计推荐=5P)即动态出局，须复投重开。直推数=可拿代数(上限20)。
 8. 加速释放（按额度驱动，用户 2026-09-24 定义）：出局以额度消耗推进，动态额度 5×本金被推荐奖励逐笔消耗、静态额度 2×本金被提取逐笔消耗，任一额度耗尽即触发对应出局；复投注入新额度立即恢复释放节奏。
