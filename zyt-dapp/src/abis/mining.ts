@@ -446,6 +446,25 @@ export const MINING_ABI = [
     "type": "address"
    }
   ],
+  "name": "directDownlineDeposit",
+  "outputs": [
+   {
+    "internalType": "uint256",
+    "name": "",
+    "type": "uint256"
+   }
+  ],
+  "stateMutability": "view",
+  "type": "function"
+ },
+ {
+  "inputs": [
+   {
+    "internalType": "address",
+    "name": "",
+    "type": "address"
+   }
+  ],
   "name": "dividendClaimedDay",
   "outputs": [
    {
@@ -476,6 +495,25 @@ export const MINING_ABI = [
     "internalType": "uint256",
     "name": "settledDay",
     "type": "uint256"
+   }
+  ],
+  "stateMutability": "view",
+  "type": "function"
+ },
+ {
+  "inputs": [
+   {
+    "internalType": "address",
+    "name": "user",
+    "type": "address"
+   }
+  ],
+  "name": "dynamicPlaying",
+  "outputs": [
+   {
+    "internalType": "bool",
+    "name": "",
+    "type": "bool"
    }
   ],
   "stateMutability": "view",
@@ -723,6 +761,11 @@ export const MINING_ABI = [
      {
       "internalType": "uint256",
       "name": "dividendClaimedDay",
+      "type": "uint256"
+     },
+     {
+      "internalType": "uint256",
+      "name": "directDeposit",
       "type": "uint256"
      },
      {

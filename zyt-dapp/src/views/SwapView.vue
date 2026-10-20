@@ -23,16 +23,17 @@ const { poolStats, refresh } = usePoolData();
 const swapWired = computed(() => !!currentChain().contracts.swap);
 
 /**
- * v9.2：与合约 getCurrentSlippage 同口径的「池 USDT 较基准回落比例」。
- * 基准 = 当日 08:01 快照池 U（合约 snapshotPoolUSDT）；当前池 U 回落达 1/2/3/4% → 滑点 10/20/40/80%。
- * 峰值 peakPoolUSDT 自 v9.2 起降级为纯统计，不再参与档位判定。
+ * v9.2b：与合约定档同口径的「减少量占固定基准 2.1 万 U 的百分比」。
+ * 判据 = (上次 08:01 快照池U − 当前池U) ÷ 21,000 U；达 0.2/0.6/1.2/2.4% → 滑点 10/20/40/80%（当日 08:01 锁定）。
+ * 展示值仅作参考，真实档位以链上 getCurrentSlippage() 为准（poolStats.slippage 直读链上）。
  */
+const SLIPPAGE_DROP_BASE = 21000;
 const reductionPct = computed(() => {
   const cur = parseFloat(poolStats.value.poolUSDT || "0") || 0;
-  const base = parseFloat(poolStats.value.snapshotPoolUSDT || "0") || 0;
-  if (base <= 0 || cur >= base) return "0";
-  const pct = ((base - cur) / base) * 100;
-  return pct > 0 ? pct.toFixed(1) : "0";
+  const snap = parseFloat(poolStats.value.snapshotPoolUSDT || "0") || 0;
+  if (snap <= 0 || cur >= snap) return "0";
+  const pct = ((snap - cur) / SLIPPAGE_DROP_BASE) * 100;
+  return pct > 0 ? pct.toFixed(2) : "0";
 });
 
 onMounted(() => refresh());

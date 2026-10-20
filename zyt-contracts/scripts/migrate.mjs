@@ -88,9 +88,9 @@ const MINING_READ_ABI = [
   "event Deposited(address indexed user, uint256 usdt, uint256 power, uint256 quota, address ref)",
 ];
 
-/** setUserData 的元组顺序：12 个 uint256 在前，2 个 bool 在后（与合约结构体一致） */
+/** setUserData 的元组顺序：13 个 uint256 在前，2 个 bool 在后（与合约结构体一致） */
 const WRITE_TUPLE =
-  "(uint256,uint256,uint256,uint256,uint256,uint256,uint256,uint256,uint256,uint256,uint256,uint256,bool,bool)";
+  "(uint256,uint256,uint256,uint256,uint256,uint256,uint256,uint256,uint256,uint256,uint256,uint256,uint256,bool,bool)";
 const MINING_WRITE_ABI = [
   `function setUserData(address[] users, ${WRITE_TUPLE}[] data)`,
   "function setLaunchDay(uint256 day)",
@@ -100,7 +100,13 @@ const TOKEN_ABI = [
   "function getUserCount() view returns (uint256)",
   "function getUserAt(uint256) view returns (address)",
 ];
-const CONFIG_ABI = ["function owner() view returns (address)", "function paused() view returns (bool)"];
+const CONFIG_ABI = [
+  "function owner() view returns (address)",
+  "function paused() view returns (bool)",
+  "function referral() view returns (address)",
+];
+const REFERRAL_ABI = ["function referrerOf(address) view returns (address)"];
+const ZERO = "0x0000000000000000000000000000000000000000";
 
 // ---------------- 工具 ----------------
 
@@ -158,6 +164,7 @@ function toWriteTuple(rec) {
     "dynamicQuota",
     "dynamicWithdrawn",
     "dividendClaimedDay",
+    "directDeposit", // v9.2b：一级直推累计入金（「在玩」判据分子）
   ].map((f) => BigInt(rec[f] || "0"));
   return [...uints, Boolean(rec.isExited), Boolean(rec.dynamicExited)];
 }
@@ -231,6 +238,30 @@ async function cmdSnapshot() {
   for (let i = 0; i < users.length; i++) {
     records.push(await readUser(oldMining, users[i]));
     if ((i + 1) % 200 === 0) log(`  ...已读 ${i + 1}/${users.length}`);
+  }
+
+  // v9.2b：聚合「一级直推累计入金」——「在玩」判据的分子，漏填会让老用户一律掉到 2% 档
+  if (OLD_CONFIG) {
+    const refAddr = await new Contract(OLD_CONFIG, CONFIG_ABI, provider).referral();
+    if (refAddr && refAddr.toLowerCase() !== ZERO) {
+      const oldRef = new Contract(refAddr, REFERRAL_ABI, provider);
+      const agg = new Map();
+      for (let i = 0; i < records.length; i++) {
+        const r = records[i];
+        const up = await oldRef.referrerOf(r.address).catch(() => ZERO);
+        const upLc = String(up || ZERO).toLowerCase();
+        if (upLc !== ZERO && upLc !== r.address.toLowerCase()) {
+          agg.set(upLc, (agg.get(upLc) || 0n) + BigInt(r.depositTotal || "0"));
+        }
+        if ((i + 1) % 200 === 0) log(`  ...直推聚合 ${i + 1}/${records.length}`);
+      }
+      for (const r of records) r.directDeposit = (agg.get(r.address.toLowerCase()) || 0n).toString();
+      log(`直推累计已聚合：${agg.size} 人有直推下线`);
+    } else {
+      log("[严重警告] 旧 Config.referral() 为空 → directDeposit 全为 0，老用户将一律判「不在玩」（2% 档）");
+    }
+  } else {
+    log("[严重警告] 未提供 OLD_CONFIG，无法读 referrerOf → directDeposit 全为 0（老用户将掉 2% 档）");
   }
 
   ensureDir(OUT_DIR);

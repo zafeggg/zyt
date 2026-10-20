@@ -193,7 +193,7 @@ export const FORCESELL_ABI = [
  },
  {
   "inputs": [],
-  "name": "TIER60_BPS",
+  "name": "DEFAULT_TIER60_BPS",
   "outputs": [
    {
     "internalType": "uint256",
@@ -206,7 +206,7 @@ export const FORCESELL_ABI = [
  },
  {
   "inputs": [],
-  "name": "TIER_AFTER60_BPS",
+  "name": "DEFAULT_TIER_AFTER60_BPS",
   "outputs": [
    {
     "internalType": "uint256",
@@ -219,7 +219,7 @@ export const FORCESELL_ABI = [
  },
  {
   "inputs": [],
-  "name": "TIER_FIRST_BPS",
+  "name": "DEFAULT_TIER_FIRST_BPS",
   "outputs": [
    {
     "internalType": "uint256",
@@ -232,7 +232,7 @@ export const FORCESELL_ABI = [
  },
  {
   "inputs": [],
-  "name": "TIER_STEP_BPS",
+  "name": "DEFAULT_TIER_STEP_BPS",
   "outputs": [
    {
     "internalType": "uint256",
@@ -270,6 +270,19 @@ export const FORCESELL_ABI = [
    }
   ],
   "stateMutability": "nonpayable",
+  "type": "function"
+ },
+ {
+  "inputs": [],
+  "name": "config",
+  "outputs": [
+   {
+    "internalType": "address",
+    "name": "",
+    "type": "address"
+   }
+  ],
+  "stateMutability": "view",
   "type": "function"
  },
  {
@@ -433,6 +446,19 @@ export const FORCESELL_ABI = [
    }
   ],
   "name": "resetWindow",
+  "outputs": [],
+  "stateMutability": "nonpayable",
+  "type": "function"
+ },
+ {
+  "inputs": [
+   {
+    "internalType": "address",
+    "name": "_config",
+    "type": "address"
+   }
+  ],
+  "name": "setConfig",
   "outputs": [],
   "stateMutability": "nonpayable",
   "type": "function"

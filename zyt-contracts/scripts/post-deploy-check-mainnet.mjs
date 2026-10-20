@@ -113,6 +113,16 @@ const cfg = new Contract(
     "function dailyCompoundRate() view returns (uint256)",
     "function accountDepositCap() view returns (uint256)",
     "function depositStep() view returns (uint256)",
+    // v9.2b：滑点日环比定档参数 + 卖币档位参数
+    "function slippageDropBase() view returns (uint256)",
+    "function slippageDropBps1() view returns (uint256)",
+    "function slippageDropBps2() view returns (uint256)",
+    "function slippageDropBps3() view returns (uint256)",
+    "function slippageDropBps4() view returns (uint256)",
+    "function tierFirstBps() view returns (uint256)",
+    "function tierStepBps() view returns (uint256)",
+    "function tierAfter60Bps() view returns (uint256)",
+    "function tier60Bps() view returns (uint256)",
     "function setAddress(bytes32,address)",
   ],
   owner || p
@@ -265,6 +275,33 @@ const [maxSupply, minDep, maxDep, s1, s2, powerRate, dynMul, buyRate, poolRate, 
 checkNum("zytMaxSupply（33 亿）", maxSupply, "3300000000");
 checkNum("accountDepositCap（单钱包累计入金上限）", accCap, "500");
 checkNum("depositStep（入金 100U 倍数步长）", dStep, "100");
+
+// v9.2b：滑点定档（21,000 U 基准 + 0.2/0.6/1.2/2.4%）与卖币档位（20/10/2/60）
+{
+  const [dBase, d1, d2, d3, d4, tFirst, tStep, tAfter60, t60] = await Promise.all([
+    cfg.slippageDropBase(),
+    cfg.slippageDropBps1(),
+    cfg.slippageDropBps2(),
+    cfg.slippageDropBps3(),
+    cfg.slippageDropBps4(),
+    cfg.tierFirstBps(),
+    cfg.tierStepBps(),
+    cfg.tierAfter60Bps(),
+    cfg.tier60Bps(),
+  ]);
+  checkNum("slippageDropBase（2.1 万 U）", dBase, "21000");
+  checkNum("slippageDropBps1（0.2%）", d1, "20");
+  checkNum("slippageDropBps2（0.6%）", d2, "60");
+  checkNum("slippageDropBps3（1.2%）", d3, "120");
+  checkNum("slippageDropBps4（2.4%）", d4, "240");
+  check("滑点阈值严格递增", d1 < d2 && d2 < d3 && d3 < d4, true);
+  checkNum("tierFirstBps（首期 20%）", tFirst, "2000");
+  checkNum("tierStepBps（常规 10%）", tStep, "1000");
+  checkNum("tierAfter60Bps（不在玩 2%）", tAfter60, "200");
+  checkNum("tier60Bps（60% 阈值）", t60, "6000");
+  check("档位梯形合法", tAfter60 <= tStep && tStep <= tFirst && tFirst <= 10000n, true);
+  info("滑点当日锁定值 slippageBpsToday", String(await new Contract(C.ZYTPoolManager, ["function slippageBpsToday() view returns (uint256)"], provider).slippageBpsToday()));
+}
 checkNum("minDeposit", minDep, "100");
 checkNum("maxDeposit", maxDep, "500");
 info("poolStage1USDT", `${formatEther(s1)} U（主网正式口径应为 10000000）`);

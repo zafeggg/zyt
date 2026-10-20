@@ -193,6 +193,37 @@ export const POOL_ABI = [
    {
     "indexed": false,
     "internalType": "uint256",
+    "name": "bps",
+    "type": "uint256"
+   },
+   {
+    "indexed": false,
+    "internalType": "uint256",
+    "name": "prevPoolU",
+    "type": "uint256"
+   },
+   {
+    "indexed": false,
+    "internalType": "uint256",
+    "name": "poolU",
+    "type": "uint256"
+   },
+   {
+    "indexed": false,
+    "internalType": "uint256",
+    "name": "dropU",
+    "type": "uint256"
+   }
+  ],
+  "name": "SlippageTierSet",
+  "type": "event"
+ },
+ {
+  "anonymous": false,
+  "inputs": [
+   {
+    "indexed": false,
+    "internalType": "uint256",
     "name": "price",
     "type": "uint256"
    },
@@ -731,6 +762,19 @@ export const POOL_ABI = [
   "name": "setTreasury",
   "outputs": [],
   "stateMutability": "nonpayable",
+  "type": "function"
+ },
+ {
+  "inputs": [],
+  "name": "slippageBpsToday",
+  "outputs": [
+   {
+    "internalType": "uint256",
+    "name": "",
+    "type": "uint256"
+   }
+  ],
+  "stateMutability": "view",
   "type": "function"
  },
  {

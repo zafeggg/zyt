@@ -103,6 +103,74 @@ export const CONFIG_ABI = [
   "inputs": [
    {
     "indexed": false,
+    "internalType": "uint256",
+    "name": "first",
+    "type": "uint256"
+   },
+   {
+    "indexed": false,
+    "internalType": "uint256",
+    "name": "step",
+    "type": "uint256"
+   },
+   {
+    "indexed": false,
+    "internalType": "uint256",
+    "name": "after60",
+    "type": "uint256"
+   },
+   {
+    "indexed": false,
+    "internalType": "uint256",
+    "name": "tier60",
+    "type": "uint256"
+   }
+  ],
+  "name": "SellTiersSet",
+  "type": "event"
+ },
+ {
+  "anonymous": false,
+  "inputs": [
+   {
+    "indexed": false,
+    "internalType": "uint256",
+    "name": "base",
+    "type": "uint256"
+   },
+   {
+    "indexed": false,
+    "internalType": "uint256",
+    "name": "d1",
+    "type": "uint256"
+   },
+   {
+    "indexed": false,
+    "internalType": "uint256",
+    "name": "d2",
+    "type": "uint256"
+   },
+   {
+    "indexed": false,
+    "internalType": "uint256",
+    "name": "d3",
+    "type": "uint256"
+   },
+   {
+    "indexed": false,
+    "internalType": "uint256",
+    "name": "d4",
+    "type": "uint256"
+   }
+  ],
+  "name": "SlippageDropsSet",
+  "type": "event"
+ },
+ {
+  "anonymous": false,
+  "inputs": [
+   {
+    "indexed": false,
     "internalType": "address",
     "name": "account",
     "type": "address"
@@ -607,6 +675,67 @@ export const CONFIG_ABI = [
  {
   "inputs": [
    {
+    "internalType": "uint256",
+    "name": "first",
+    "type": "uint256"
+   },
+   {
+    "internalType": "uint256",
+    "name": "step",
+    "type": "uint256"
+   },
+   {
+    "internalType": "uint256",
+    "name": "after60",
+    "type": "uint256"
+   },
+   {
+    "internalType": "uint256",
+    "name": "tier60",
+    "type": "uint256"
+   }
+  ],
+  "name": "setSellTiers",
+  "outputs": [],
+  "stateMutability": "nonpayable",
+  "type": "function"
+ },
+ {
+  "inputs": [
+   {
+    "internalType": "uint256",
+    "name": "base",
+    "type": "uint256"
+   },
+   {
+    "internalType": "uint256",
+    "name": "d1",
+    "type": "uint256"
+   },
+   {
+    "internalType": "uint256",
+    "name": "d2",
+    "type": "uint256"
+   },
+   {
+    "internalType": "uint256",
+    "name": "d3",
+    "type": "uint256"
+   },
+   {
+    "internalType": "uint256",
+    "name": "d4",
+    "type": "uint256"
+   }
+  ],
+  "name": "setSlippageDrops",
+  "outputs": [],
+  "stateMutability": "nonpayable",
+  "type": "function"
+ },
+ {
+  "inputs": [
+   {
     "internalType": "string",
     "name": "key",
     "type": "string"
@@ -620,6 +749,71 @@ export const CONFIG_ABI = [
   "name": "setUint",
   "outputs": [],
   "stateMutability": "nonpayable",
+  "type": "function"
+ },
+ {
+  "inputs": [],
+  "name": "slippageDropBase",
+  "outputs": [
+   {
+    "internalType": "uint256",
+    "name": "",
+    "type": "uint256"
+   }
+  ],
+  "stateMutability": "view",
+  "type": "function"
+ },
+ {
+  "inputs": [],
+  "name": "slippageDropBps1",
+  "outputs": [
+   {
+    "internalType": "uint256",
+    "name": "",
+    "type": "uint256"
+   }
+  ],
+  "stateMutability": "view",
+  "type": "function"
+ },
+ {
+  "inputs": [],
+  "name": "slippageDropBps2",
+  "outputs": [
+   {
+    "internalType": "uint256",
+    "name": "",
+    "type": "uint256"
+   }
+  ],
+  "stateMutability": "view",
+  "type": "function"
+ },
+ {
+  "inputs": [],
+  "name": "slippageDropBps3",
+  "outputs": [
+   {
+    "internalType": "uint256",
+    "name": "",
+    "type": "uint256"
+   }
+  ],
+  "stateMutability": "view",
+  "type": "function"
+ },
+ {
+  "inputs": [],
+  "name": "slippageDropBps4",
+  "outputs": [
+   {
+    "internalType": "uint256",
+    "name": "",
+    "type": "uint256"
+   }
+  ],
+  "stateMutability": "view",
   "type": "function"
  },
  {
@@ -721,6 +915,58 @@ export const CONFIG_ABI = [
     "internalType": "address",
     "name": "",
     "type": "address"
+   }
+  ],
+  "stateMutability": "view",
+  "type": "function"
+ },
+ {
+  "inputs": [],
+  "name": "tier60Bps",
+  "outputs": [
+   {
+    "internalType": "uint256",
+    "name": "",
+    "type": "uint256"
+   }
+  ],
+  "stateMutability": "view",
+  "type": "function"
+ },
+ {
+  "inputs": [],
+  "name": "tierAfter60Bps",
+  "outputs": [
+   {
+    "internalType": "uint256",
+    "name": "",
+    "type": "uint256"
+   }
+  ],
+  "stateMutability": "view",
+  "type": "function"
+ },
+ {
+  "inputs": [],
+  "name": "tierFirstBps",
+  "outputs": [
+   {
+    "internalType": "uint256",
+    "name": "",
+    "type": "uint256"
+   }
+  ],
+  "stateMutability": "view",
+  "type": "function"
+ },
+ {
+  "inputs": [],
+  "name": "tierStepBps",
+  "outputs": [
+   {
+    "internalType": "uint256",
+    "name": "",
+    "type": "uint256"
    }
   ],
   "stateMutability": "view",
