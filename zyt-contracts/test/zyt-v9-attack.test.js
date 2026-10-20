@@ -146,6 +146,7 @@ describe("ZYT v9.1 攻击向量", function () {
     await mining.setDeflation(await deflation.getAddress());
     await forceSell.setKeeper(keeper.address);
     await forceSell.setMining(await mining.getAddress()); // v9.2：窗口复位授权（复投 / 迁移）
+    await forceSell.setConfig(await config.getAddress()); // v9.2b：卖币档位参数来源
 
     await creator.setTreasury(root.address); // 模拟 W3 营销 Safe（上方已白名单，红线第 1 条）
     await usdt.faucet(SEED_USDT * 100n);

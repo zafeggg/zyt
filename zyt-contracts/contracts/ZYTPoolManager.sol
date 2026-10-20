@@ -37,8 +37,13 @@ contract ZYTPoolManager is Ownable, ReentrancyGuard {
 
     // ---------- 快照与基准 ----------
     uint256 public snapshotPrice;       // 每日 08:01 快照锁定价（记账：转账计值/强卖/额度）
-    uint256 public snapshotPoolUSDT;    // 每日 08:01 快照池 USDT（v9.2：滑点档位基准）
+    uint256 public snapshotPoolUSDT;    // 每日 08:01 快照池 USDT（日环比对比的「上次值」）
     uint256 public lastSnapshotAt;
+    /**
+     * @notice v9.2b 当日滑点档位（基点，08:01 定档后当日锁定）
+     * @dev 0 = 尚未发生过快照 → getCurrentSlippage 回退 config.baseSlippage()
+     */
+    uint256 public slippageBpsToday;
     uint256 public peakPoolUSDT;        // 历史峰值池 USDT（v9.2 降级为纯统计，不再作滑点基准）
     uint256 public totalLpBurned;       // 累计销毁 LP（入金 60% 凭证）
 
@@ -177,23 +182,17 @@ contract ZYTPoolManager is Ownable, ReentrancyGuard {
     }
 
     /**
-     * @notice 当前滑点档位（基点）：池 USDT 较「当日 08:01 快照池 U」的减少比例分档
-     * @dev v9.2（2026-10-13 拍板）：基准由历史峰值 peakPoolUSDT 改为 snapshotPoolUSDT
-     *      （每日 08:01 通缩快照时的底池 U）。峰值只升不降，会被「拉高再撤」长期锚在高位，
-     *      导致正常回落的用户被动升档（A1）；快照基准每日重置，且最多 24h 更新一次，
-     *      操纵面收敛为「快照时刻的真实池 U」。
-     *      基准为 0（尚未发生任何快照）或池 U 不低于基准 → 基准滑点 5%。
+     * @notice 当前滑点档位（基点）：返回 08:01 定档的当日锁定值
+     * @dev v9.2b（2026-10-20 拍板）：档位不再随盘中池 U 变化即时重算，而是每日 08:01
+     *      由 updateSnapshot 做「日环比」定档后锁定当日全部卖单：
+     *        减少量 = 上次快照池U − 本次快照池U
+     *        减少量 × 10000 ≥ fixedBase × dropBpsN → slippageTierN
+     *      池 U 增加/持平 → baseSlippage。基准为常量 config.slippageDropBase()（默认 2.1 万 U），
+     *      与池子规模无关；历史峰值 peakPoolUSDT 仅作统计。
      */
     function getCurrentSlippage() public view returns (uint256) {
-        (, uint256 uRes) = _reserves();
-        uint256 base = snapshotPoolUSDT;
-        if (base == 0 || uRes >= base) return config.baseSlippage();
-        uint256 reduction = (base - uRes) * 10000 / base;
-        if (reduction >= 400) return config.slippageTier4();   // 80%
-        if (reduction >= 300) return config.slippageTier3();   // 40%
-        if (reduction >= 200) return config.slippageTier2();   // 20%
-        if (reduction >= 100) return config.slippageTier1();   // 10%
-        return config.baseSlippage();                          // 5%
+        uint256 v = slippageBpsToday;
+        return v == 0 ? config.baseSlippage() : v;
     }
 
     // ---------- 入金 60% 处置 ----------
@@ -300,14 +299,39 @@ contract ZYTPoolManager is Ownable, ReentrancyGuard {
 
     // ---------- 每日快照与通缩 ----------
 
-    /// @notice 更新快照（Keeper 每日 08:01，由 Deflation 转调）
+    event SlippageTierSet(uint256 bps, uint256 prevPoolU, uint256 poolU, uint256 dropU);
+
+    /**
+     * @notice 更新快照并做日环比定档（Keeper 每日 08:01，由 Deflation 转调）
+     * @dev 顺序红线：必须先读旧 snapshotPoolUSDT 再覆盖，否则日环比恒为 0、档位永远停在基础值。
+     *      定档结果写入 slippageBpsToday 并锁定当日全部卖单（盘中不再变化）。
+     */
     function updateSnapshot() external onlyDeflation {
         (, uint256 uRes) = _reserves();
+        uint256 prev = snapshotPoolUSDT;
+        slippageBpsToday = _tierForDay(prev, uRes);
         snapshotPrice = getPrice();
         snapshotPoolUSDT = uRes;
         if (peakPoolUSDT < uRes) peakPoolUSDT = uRes;
         lastSnapshotAt = block.timestamp;
         emit SnapshotUpdated(snapshotPrice, uRes, block.timestamp);
+        emit SlippageTierSet(slippageBpsToday, prev, uRes, prev > uRes ? prev - uRes : 0);
+    }
+
+    /**
+     * @dev 日环比定档：减少量占「固定基准 slippageDropBase」的百分比套四档
+     *      池 U 增加/持平、尚无上次快照、或基准未配置（0）→ 基础滑点
+     */
+    function _tierForDay(uint256 prev, uint256 cur) internal view returns (uint256) {
+        if (prev == 0 || cur >= prev) return config.baseSlippage();
+        uint256 base = config.slippageDropBase();
+        if (base == 0) return config.baseSlippage();
+        uint256 drop = prev - cur;
+        if (drop * 10000 >= base * config.slippageDropBps4()) return config.slippageTier4();
+        if (drop * 10000 >= base * config.slippageDropBps3()) return config.slippageTier3();
+        if (drop * 10000 >= base * config.slippageDropBps2()) return config.slippageTier2();
+        if (drop * 10000 >= base * config.slippageDropBps1()) return config.slippageTier1();
+        return config.baseSlippage();
     }
 
     /**

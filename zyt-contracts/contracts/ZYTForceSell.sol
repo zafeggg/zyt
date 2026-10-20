@@ -26,15 +26,16 @@ import "@openzeppelin/contracts/access/Ownable.sol";
  *  - 事件签名 ForceSellBurned / WindowSettled / FirstReceive 保持不变（keeper ABI 依赖）。
  */
 contract ZYTForceSell is Ownable {
-    // ---------- 档位常量（基点） ----------
-    uint256 public constant TIER_FIRST_BPS = 2000;  // 首期 20%
-    uint256 public constant TIER_STEP_BPS = 1000;   // 常规每期 10%
-    uint256 public constant TIER_AFTER60_BPS = 200; // 累计卖出达入金 60% 后每期 2%
-    uint256 public constant TIER60_BPS = 6000;      // 60% 阈值（分子 withdrawTotal / 分母 depositTotal）
+    // ---------- 档位默认值（基点，仅 config 未接线时兜底） ----------
+    uint256 public constant DEFAULT_TIER_FIRST_BPS = 2000;  // 首期 20%
+    uint256 public constant DEFAULT_TIER_STEP_BPS = 1000;   // 常规每期 10%
+    uint256 public constant DEFAULT_TIER_AFTER60_BPS = 200; // 达 60% 且动态不在玩 → 2%
+    uint256 public constant DEFAULT_TIER60_BPS = 6000;      // 60% 阈值（分子 withdrawTotal / 分母 depositTotal）
 
     address public token;  // ZYTToken
     address public mining; // ZYTMining（档位输入来源 + 窗口重置授权）
     address public keeper; // 到期结算触发方
+    address public config; // ZYTConfig（v9.2b：档位参数来源；0 = 回退默认常量）
 
     struct Window {
         uint256 windowId; // 最近一次锁存的窗口 id（0 = 未锁存）
@@ -67,6 +68,11 @@ contract ZYTForceSell is Ownable {
     /// @notice 设置 Mining（档位输入来源 + 窗口重置授权）
     function setMining(address _mining) external onlyOwner {
         mining = _mining;
+    }
+
+    /// @notice 设置 Config（v9.2b 档位参数来源；部署红线：必须与 setKeeper/setMining 一同接线）
+    function setConfig(address _config) external onlyOwner {
+        config = _config;
     }
 
     // ---------- 视图 ----------
@@ -195,12 +201,26 @@ contract ZYTForceSell is Ownable {
         }
     }
 
-    /// @notice 当期档位：首期 20% →（withdrawTotal ≥ 60% × depositTotal）2% → 常规 10%
+    /**
+     * @notice 当期档位（v9.2b）：首期 20% → 未达 60% 常规 10% → 达 60% 时按「动态是否在玩」分档
+     * @dev 达 60%（withdrawTotal ≥ tier60Bps × depositTotal）后：
+     *        - 在玩（一级直推累计入金 ≥ 本人入金）→ tierStepBps（默认 10%）
+     *        - 不在玩 → tierAfter60Bps（默认 2%）
+     *      四个参数优先读 config，未接线时回退默认常量（迁移期可灰度，不会导致档位归零）。
+     */
     function _tierBps(address user) internal view returns (uint256) {
-        if (!firstSellDone[user]) return TIER_FIRST_BPS;
+        address c = config;
+        bool wired = c != address(0);
+        if (!firstSellDone[user]) {
+            return wired ? IZYTConfigTier(c).tierFirstBps() : DEFAULT_TIER_FIRST_BPS;
+        }
         (uint256 dep, uint256 wd) = IZYTMiningTier(mining).sellTierInputs(user);
-        if (dep > 0 && wd * 10000 >= dep * TIER60_BPS) return TIER_AFTER60_BPS;
-        return TIER_STEP_BPS;
+        uint256 th = wired ? IZYTConfigTier(c).tier60Bps() : DEFAULT_TIER60_BPS;
+        if (dep > 0 && wd * 10000 >= dep * th) {
+            bool playing = IZYTMiningTier(mining).dynamicPlaying(user);
+            if (!playing) return wired ? IZYTConfigTier(c).tierAfter60Bps() : DEFAULT_TIER_AFTER60_BPS;
+        }
+        return wired ? IZYTConfigTier(c).tierStepBps() : DEFAULT_TIER_STEP_BPS;
     }
 
     /**
@@ -252,7 +272,16 @@ interface IZYTTokenInfo {
     function pool() external view returns (address);
 }
 
-/// @notice ZYTMining 档位输入（depositTotal / withdrawTotal）
+/// @notice ZYTMining 档位输入（depositTotal / withdrawTotal）+ 动态「在玩」判据
 interface IZYTMiningTier {
     function sellTierInputs(address user) external view returns (uint256 depositTotal, uint256 withdrawTotal);
+    function dynamicPlaying(address user) external view returns (bool);
+}
+
+/// @notice ZYTConfig 卖币档位参数（v9.2b）
+interface IZYTConfigTier {
+    function tierFirstBps() external view returns (uint256);
+    function tierStepBps() external view returns (uint256);
+    function tierAfter60Bps() external view returns (uint256);
+    function tier60Bps() external view returns (uint256);
 }

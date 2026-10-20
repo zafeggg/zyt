@@ -141,6 +141,7 @@ describe("ZYT v9", function () {
     await mining.setDeflation(await deflation.getAddress());
     await forceSell.setKeeper(keeper.address);
     await forceSell.setMining(await mining.getAddress()); // v9.2：窗口复位授权（复投 / 迁移）
+    await forceSell.setConfig(await config.getAddress()); // v9.2b：卖币档位参数来源
 
     // ---- 建池（v9.2：铸 33 亿，21 亿组池 + 12 亿转 Treasury） ----
     await creator.setTreasury(root.address); // 模拟 W3 营销 Safe（上方已白名单，红线第 1 条）
@@ -499,10 +500,10 @@ describe("ZYT v9", function () {
     expect(base).to.be.gt(0n);
     expect(await pool.getCurrentSlippage()).to.equal(500n); // 池 U ≥ 基准 → 基准档
 
-    // 逐窗口卖出（首期 20%，其后常规 10%）把池 U 压到基准下方 ≥1%
+    // 逐窗口卖出把池 U 压下去（v9.2b：档位只在 08:01 日环比定档，盘中卖出不改档）
     for (let i = 0; i < 8; i++) {
       const curNow = await pool.poolUSDT();
-      if (curNow * 10000n <= base * 9900n) break; // 已跌 ≥1%
+      if (curNow * 10000n <= base * 9900n) break; // 已跌 ≥1%，必然越过最小档 42 U
       await gotoWindow();
       const bal = await zyt.balanceOf(bob.address);
       if (bal === 0n) break;
@@ -512,11 +513,30 @@ describe("ZYT v9", function () {
     }
 
     const cur = await pool.poolUSDT();
-    const reduction = (base - cur) * 10000n / base;
-    expect(reduction).to.be.gte(100n); // 跌幅已过 1% 档
-    const expected = reduction >= 400n ? 8000n : reduction >= 300n ? 4000n
-      : reduction >= 200n ? 2000n : reduction >= 100n ? 1000n : 500n;
+    const drop = base > cur ? base - cur : 0n;
+    expect(drop).to.be.gte(42n * E18); // ≥ 0.2% × 2.1 万 U
+
+    // 盘中不改档：仍是上一次 08:01 定下的基础档
+    expect(await pool.getCurrentSlippage()).to.equal(500n);
+
+    // 次日 08:01 日环比定档：42/126/252/504 U 四档
+    const nextDay = async () => {
+      await ethers.provider.send("evm_increaseTime", [86400]);
+      await ethers.provider.send("evm_mine");
+    };
+    await nextDay();
+    await deflation.connect(keeper).dailySnapshot(U500);
+    const expected = drop >= 504n * E18 ? 8000n : drop >= 252n * E18 ? 4000n
+      : drop >= 126n * E18 ? 2000n : drop >= 42n * E18 ? 1000n : 500n;
+    expect(await pool.slippageBpsToday()).to.equal(expected);
     expect(await pool.getCurrentSlippage()).to.equal(expected);
+
+    // 池 U 增加 → 次日回基础档（不惩罚）
+    await usdt.transfer(pair, SEED_USDT * 2n);
+    await (await ethers.getContractAt("MiniPair", pair)).sync();
+    await nextDay();
+    await deflation.connect(keeper).dailySnapshot(U500);
+    expect(await pool.getCurrentSlippage()).to.equal(500n);
   });
 
   it("11. 算力补偿（v16）：后入金者按 1.01^天数 补偿，全网算力同步基准", async function () {
@@ -627,7 +647,7 @@ describe("ZYT v9", function () {
   });
 
   it("14. v9.2 迁移接口：setUserData 批量回填（含分红游标）+ launchDay 继承 + 窗口重置首期", async function () {
-    const empty = [0n, 0n, 0n, 0n, 0n, 0n, 0n, 0n, 0n, 0n, 0n, 0n, false, false];
+    const empty = [0n, 0n, 0n, 0n, 0n, 0n, 0n, 0n, 0n, 0n, 0n, 0n, 0n, false, false];
     // 权限闭合
     await expect(mining.connect(alice).setUserData([alice.address], [empty]))
       .to.be.revertedWith("Mining: not owner");
@@ -651,8 +671,8 @@ describe("ZYT v9", function () {
 
     const u = await mining.users(bob.address);
     const cursor = (await mining.dividendOf(bob.address))[1];
-    // migrate.mjs 的元组顺序：11 个 uint（跳过 isExited）+ dividendClaimedDay + 2 bool
-    const tuple = [u[0], u[1], u[2], u[3], u[4], u[6], u[7], u[8], u[9], u[10], u[11], cursor, u[5], u[12]];
+    // migrate.mjs 的元组顺序：11 个 uint（跳过 isExited）+ dividendClaimedDay + directDeposit + 2 bool
+    const tuple = [u[0], u[1], u[2], u[3], u[4], u[6], u[7], u[8], u[9], u[10], u[11], cursor, 0n, u[5], u[12]];
     await mining.setUserData([bob.address], [tuple]);
 
     // 逐字段等价（含分红游标）
@@ -715,12 +735,98 @@ describe("ZYT v9", function () {
     expect((await mining.userInfo(alice.address)).dynamicExited).to.equal(true);
 
     await gotoWindow();
-    // 动态出局 → 禁卖（守卫先于窗口/额度校验，故窗口日亦恒定 revert）
-    await expect(mining.connect(alice).sellZyt(1n * E18)).to.be.revertedWith("Mining: dynamic exited");
+    // v9.2b 双向联动：动态出局 → 静态同步结束 → 禁卖（isExited 守卫在前，故报静态）
+    const info = await mining.userInfo(alice.address);
+    expect(info[7]).to.equal(true); // dynamicExited
+    expect(info[6]).to.equal(true); // isExited（联动置位）
+    await expect(mining.connect(alice).sellZyt(1n * E18)).to.be.revertedWith("Mining: static exited");
 
-    // 复投开新一轮 → 解除
+    // 复投开新一轮 → 双方同时解除
     await depositOf(alice, U500, root.address);
-    expect((await mining.userInfo(alice.address)).dynamicExited).to.equal(false);
-    await expect(mining.connect(alice).sellZyt(1n * E18)).to.not.be.revertedWith("Mining: dynamic exited");
+    const info2 = await mining.userInfo(alice.address);
+    expect(info2[7]).to.equal(false);
+    expect(info2[6]).to.equal(false);
+    await expect(mining.connect(alice).sellZyt(1n * E18)).to.not.be.revertedWith("Mining: static exited");
+  });
+
+  it("17. v9.2b 参数口子：原子 setter 顺序校验 + 单键生效 + 越界拒绝", async function () {
+    // 非法序整笔 revert（不落盘）
+    await expect(config.setSlippageDrops(21_000n * E18, 60n, 20n, 120n, 240n))
+      .to.be.revertedWith("ZYTConfig: drop order");
+    await expect(config.setSellTiers(2000n, 1000n, 3000n, 6000n))
+      .to.be.revertedWith("ZYTConfig: tier order");
+    await expect(config.setSellTiers(2000n, 1000n, 200n, 0n))
+      .to.be.revertedWith("ZYTConfig: tier60");
+
+    // 默认值 = 21,000 U 基准 + 0.2/0.6/1.2/2.4% 与 20/10/2/60
+    expect(await config.slippageDropBase()).to.equal(21_000n * E18);
+    expect(await config.slippageDropBps1()).to.equal(20n);
+    expect(await config.slippageDropBps4()).to.equal(240n);
+    expect(await config.tierFirstBps()).to.equal(2000n);
+    expect(await config.tierAfter60Bps()).to.equal(200n);
+    expect(await config.tier60Bps()).to.equal(6000n);
+
+    // 原子改整套：基准翻倍 + 四档百分比整体缩放
+    await config.setSlippageDrops(42_000n * E18, 10n, 30n, 60n, 120n);
+    expect(await config.slippageDropBase()).to.equal(42_000n * E18);
+    expect(await config.slippageDropBps3()).to.equal(60n);
+
+    // 单键改（应急路径）
+    await config.setUint("slippageDropBps1", 15n);
+    expect(await config.slippageDropBps1()).to.equal(15n);
+    await config.setUint("tierAfter60Bps", 300n);
+    expect(await config.tierAfter60Bps()).to.equal(300n);
+
+    // 越界与未知键
+    await expect(config.setUint("slippageDropBps1", 0n)).to.be.revertedWith("ZYTConfig: bps range");
+    await expect(config.setUint("tier60Bps", 10001n)).to.be.revertedWith("ZYTConfig: bps range");
+    await expect(config.setUint("slippageDropBase", 0n)).to.be.revertedWith("ZYTConfig: base 0");
+    await expect(config.setUint("noSuchParam", 1n)).to.be.revertedWith("ZYTConfig: unknown key");
+    // 非 owner 无法改
+    await expect(config.connect(alice).setSlippageDrops(1n, 1n, 2n, 3n, 4n))
+      .to.be.revertedWithCustomError(config, "OwnableUnauthorizedAccount");
+  });
+
+  it("18. v9.2b 在玩判据与 60% 后分档：直推入金 ≥ 本人入金 → 10%，否则 2%", async function () {
+    await gotoWindow();
+    await config.setUint("poolStage1USDT", 21000n * E18);
+    await config.setUint("poolStage2USDT", 10_000_000n * E18);
+
+    // carol 无直推：首卖结束首期，随后靠转账（视同卖出）把 withdrawTotal 推过 60%
+    await depositOf(carol, U500, ethers.ZeroAddress);
+    expect(await mining.dynamicPlaying(carol.address)).to.equal(false);
+    await usdt.connect(carol).faucet(U500);
+    await usdt.connect(carol).approve(await mining.getAddress(), U500);
+    await mining.connect(carol).buy(U500);
+    const bal = await zyt.balanceOf(carol.address);
+    await zyt.connect(carol).approve(await pool.getAddress(), bal);
+    await mining.connect(carol).sellZyt(bal * 2000n / 10000n);
+    expect(await forceSell.firstSellDone(carol.address)).to.equal(true);
+
+    await usdt.transfer(pair, SEED_USDT * 4n); // 抬价，使 30% 转账折算足够跨过 60%
+    await (await ethers.getContractAt("MiniPair", pair)).sync();
+    const bal2 = await zyt.balanceOf(carol.address);
+    await zyt.connect(carol).transfer(deployer.address, bal2 * 30n / 100n);
+
+    const info = await mining.userInfo(carol.address);
+    expect(info.withdrawTotal).to.be.gte(300n * E18); // ≥ 60% × 500U
+    expect(info[6]).to.equal(false);                  // 未触 2 倍线，仍可卖
+
+    // 不在玩 → 2% 档
+    expect(await mining.dynamicPlaying(carol.address)).to.equal(false);
+    expect(await forceSell.tierBpsOf(carol.address)).to.equal(200n);
+
+    // carol 的一级直推入金 500U → 在玩 → 10% 档
+    const d1 = (await ethers.getSigners())[10];
+    await depositOf(d1, U500, carol.address);
+    expect(await mining.directDownlineDeposit(carol.address)).to.equal(U500);
+    expect(await mining.dynamicPlaying(carol.address)).to.equal(true);
+    expect(await forceSell.tierBpsOf(carol.address)).to.equal(1000n);
+
+    // 口径边界：直推累计只看一级（d1 的下线不计入 carol）
+    const d2 = (await ethers.getSigners())[11];
+    await depositOf(d2, U500, d1.address);
+    expect(await mining.directDownlineDeposit(carol.address)).to.equal(U500);
+    expect(await mining.directDownlineDeposit(d1.address)).to.equal(U500);
   });
 });

@@ -120,6 +120,10 @@ contract ZYTMining is ReentrancyGuard {
         // 1. 推荐关系绑定（先绑定再分账）
         referral.bind(msg.sender, ref);
 
+        // 1.1 v9.2b：「在玩」判据的分子 —— 一级直推累计入金（下线自己入金的钱，含其复投）
+        address dr = referral.referrerOf(msg.sender);
+        if (dr != address(0) && dr != msg.sender) directDownlineDeposit[dr] += usdtAmount;
+
         // 2. 40% 生态奖励：30% 代数（逐笔消耗推荐人动态额度）+ 10% 技术运维
         _distributeRef(msg.sender, usdtAmount);
 
@@ -318,6 +322,7 @@ contract ZYTMining is ReentrancyGuard {
         u.isExited = true;
         u.exitDay = block.timestamp / 86400;
         emit StaticExited(user);
+        _syncExit(user); // v9.2b：静态出局 → 动态同步结束
     }
 
     // ---------- 视图 ----------
@@ -370,6 +375,41 @@ contract ZYTMining is ReentrancyGuard {
         withdrawCap = u.depositTotal * config.staticExitMul() + receivedValue;
     }
 
+    // ---------- v9.2b 动态「在玩」判据与双向联动出局 ----------
+
+    /// @notice 一级直推累计入金（只累计下线本人入金金额，不含我获得的直推奖励）
+    mapping(address => uint256) public directDownlineDeposit;
+
+    /**
+     * @notice 是否「在玩」：一级直推累计入金 ≥ 本人本轮入金（depositTotal）
+     * @dev 口径（2026-10-20 拍板）：分子 = 下线自己入金的钱（终身累计、含其复投），
+     *      不是我的动态额度/dynamicWithdrawn，也不是按 30% 拿到的直推奖励。
+     */
+    function dynamicPlaying(address user) external view returns (bool) {
+        UserState storage u = users[user];
+        return u.depositTotal > 0 && directDownlineDeposit[user] >= u.depositTotal;
+    }
+
+    /**
+     * @notice 双向联动出局：静态（2 倍）与动态（5 倍）任一方结束，另一方同步结束
+     * @dev 动态→静态联动时必须补记 exitDay，否则分红结算仍按有效算力继续累计；
+     *      静态→动态联动只置位，不影响 exitDay（静态分支已记）。
+     */
+    function _syncExit(address user) internal {
+        if (user == address(0)) return;
+        UserState storage u = users[user];
+        if (u.isExited) {
+            if (!u.dynamicExited) {
+                u.dynamicExited = true;
+                emit DynamicExited(user);
+            }
+        } else if (u.dynamicExited) {
+            u.isExited = true;
+            u.exitDay = block.timestamp / 86400;
+            emit StaticExited(user);
+        }
+    }
+
     // ---------- 迁移（路线 A：一次性迁移，2026-10-13 拍板） ----------
 
     /// @notice 档位输入（ZYTForceSell 读取；口径 = 清单「withdrawTotal ÷ depositTotal」）
@@ -392,6 +432,7 @@ contract ZYTMining is ReentrancyGuard {
         uint256 dynamicQuota;
         uint256 dynamicWithdrawn;
         uint256 dividendClaimedDay;
+        uint256 directDeposit; // v9.2b：一级直推累计入金（不填会让老用户一律判「不在玩」→ 2% 档）
         bool isExited;
         bool dynamicExited;
     }
@@ -424,6 +465,7 @@ contract ZYTMining is ReentrancyGuard {
             u.isExited = d.isExited;
             u.dynamicExited = d.dynamicExited;
             dividendClaimedDay[a] = d.dividendClaimedDay;
+            directDownlineDeposit[a] = d.directDeposit;
             if (fs != address(0)) IZYTForceSellReset(fs).resetWindow(a);
             emit UserDataMigrated(a);
         }
@@ -496,6 +538,7 @@ contract ZYTMining is ReentrancyGuard {
         if (!u.dynamicExited && u.dynamicWithdrawn >= u.dynamicQuota) {
             u.dynamicExited = true;
             emit DynamicExited(referrer);
+            _syncExit(referrer); // v9.2b：动态出局 → 静态同步结束（补记 exitDay）
         }
     }
 }

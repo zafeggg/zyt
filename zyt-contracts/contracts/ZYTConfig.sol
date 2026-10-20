@@ -27,11 +27,24 @@ contract ZYTConfig is Ownable {
     uint256 public staticExitMul = 2;               // 静态 2 倍出局
     uint256 public deflationRate = 200;             // 每日通缩 2%（1% 销毁 + 1% 分红）
     uint256 public deflationFloor = 5_000_000e18;   // 通缩至 500 万枚停止
-    uint256 public baseSlippage = 500;              // 基础滑点 5%
-    uint256 public slippageTier1 = 1000;            // 池U较峰值减 ≥1% → 10%
-    uint256 public slippageTier2 = 2000;            // ≥2% → 20%
-    uint256 public slippageTier3 = 4000;            // ≥3% → 40%
-    uint256 public slippageTier4 = 8000;            // ≥4% → 80%
+    uint256 public baseSlippage = 500;              // 基础滑点 5%（池U未减少或未达最小阈值）
+    uint256 public slippageTier1 = 1000;            // 档位1 = 10%
+    uint256 public slippageTier2 = 2000;            // 档位2 = 20%
+    uint256 public slippageTier3 = 4000;            // 档位3 = 40%
+    uint256 public slippageTier4 = 8000;            // 档位4 = 80%
+    // v9.2b 滑点定档（2026-10-20 拍板）：固定 2.1 万 U 基准 + 每日 08:01 日环比
+    //   减少量 = 上次快照池U − 本次快照池U；减少量 × 10000 ≥ 基准 × 百分比 → 对应档位
+    //   池U 增加或持平 → baseSlippage；定档结果当日锁定（见 ZYTPoolManager.slippageBpsToday）
+    uint256 public slippageDropBase = 21_000e18;    // 固定基准 2.1 万 U（改此值四档等比缩放）
+    uint256 public slippageDropBps1 = 20;           // 0.2%（= 42 U）→ slippageTier1
+    uint256 public slippageDropBps2 = 60;           // 0.6%（= 126 U）→ slippageTier2
+    uint256 public slippageDropBps3 = 120;          // 1.2%（= 252 U）→ slippageTier3
+    uint256 public slippageDropBps4 = 240;          // 2.4%（= 504 U）→ slippageTier4
+    // v9.2b 卖币档位（基点）
+    uint256 public tierFirstBps = 2000;             // 首期 20%（未发生首卖/首转出）
+    uint256 public tierStepBps = 1000;              // 常规 10%
+    uint256 public tierAfter60Bps = 200;            // 达 60% 且动态不在玩 → 2%
+    uint256 public tier60Bps = 6000;                // 60% 阈值（withdrawTotal ÷ depositTotal）
     uint256 public transferSlippage = 1000;         // 转账滑点 10%（转账视同卖出）
     uint256 public poolStage1USDT = 10_000_000e18;  // 阶段1 < 1000 万 U 只卖
     uint256 public poolStage2USDT = 20_000_000e18;  // 阶段2 < 2000 万 U 买额 1:1
@@ -69,6 +82,8 @@ contract ZYTConfig is Ownable {
     event Unpaused(address account);
     event ParamSet(string indexed key, uint256 value);
     event AddressSet(string indexed key, address value);
+    event SlippageDropsSet(uint256 base, uint256 d1, uint256 d2, uint256 d3, uint256 d4);
+    event SellTiersSet(uint256 first, uint256 step, uint256 after60, uint256 tier60);
 
     constructor() Ownable(msg.sender) {}
 
@@ -108,6 +123,17 @@ contract ZYTConfig is Ownable {
         else if (k == keccak256("slippageTier2")) { _requireRate(value); slippageTier2 = value; }
         else if (k == keccak256("slippageTier3")) { _requireRate(value); slippageTier3 = value; }
         else if (k == keccak256("slippageTier4")) { _requireRate(value); slippageTier4 = value; }
+        // v9.2b 滑点定档：单键路径只校验区间，严格递增由 setSlippageDrops 原子入口守护
+        else if (k == keccak256("slippageDropBase")) { require(value > 0, "ZYTConfig: base 0"); slippageDropBase = value; }
+        else if (k == keccak256("slippageDropBps1")) { _requireBps(value); slippageDropBps1 = value; }
+        else if (k == keccak256("slippageDropBps2")) { _requireBps(value); slippageDropBps2 = value; }
+        else if (k == keccak256("slippageDropBps3")) { _requireBps(value); slippageDropBps3 = value; }
+        else if (k == keccak256("slippageDropBps4")) { _requireBps(value); slippageDropBps4 = value; }
+        // v9.2b 卖币档位：单键路径只校验区间，梯形关系由 setSellTiers 原子入口守护
+        else if (k == keccak256("tierFirstBps")) { _requireBps(value); tierFirstBps = value; }
+        else if (k == keccak256("tierStepBps")) { _requireBps(value); tierStepBps = value; }
+        else if (k == keccak256("tierAfter60Bps")) { _requireBps(value); tierAfter60Bps = value; }
+        else if (k == keccak256("tier60Bps")) { _requireBps(value); tier60Bps = value; }
         else if (k == keccak256("transferSlippage")) { _requireRate(value); transferSlippage = value; }
         else if (k == keccak256("poolStage1USDT")) poolStage1USDT = value;
         else if (k == keccak256("poolStage2USDT")) poolStage2USDT = value;
@@ -128,6 +154,44 @@ contract ZYTConfig is Ownable {
     /// @notice 费率类基点参数统一校验（>10000 会破坏资金分配/滑点计算）
     function _requireRate(uint256 value) private pure {
         require(value <= 10000, "ZYTConfig: rate > 10000");
+    }
+
+    /// @notice 基点参数校验：必须 > 0 且 ≤ 10000（档位/百分比类，0 会导致无法卖出）
+    function _requireBps(uint256 value) private pure {
+        require(value > 0 && value <= 10000, "ZYTConfig: bps range");
+    }
+
+    /**
+     * @notice 原子设置滑点定档参数（推荐路径：避免多笔单键调用出现非法中间态）
+     * @param base 固定基准（e18，默认 21,000 U）
+     * @param d1..d4 四档「减少百分比」基点，须严格递增且 ≤ 10000
+     */
+    function setSlippageDrops(uint256 base, uint256 d1, uint256 d2, uint256 d3, uint256 d4) external onlyOwner {
+        require(base > 0, "ZYTConfig: base 0");
+        require(d1 > 0 && d1 < d2 && d2 < d3 && d3 < d4 && d4 <= 10000, "ZYTConfig: drop order");
+        slippageDropBase = base;
+        slippageDropBps1 = d1;
+        slippageDropBps2 = d2;
+        slippageDropBps3 = d3;
+        slippageDropBps4 = d4;
+        emit SlippageDropsSet(base, d1, d2, d3, d4);
+    }
+
+    /**
+     * @notice 原子设置卖币档位（要求 after60 ≤ step ≤ first ≤ 10000 且 60% 阈值合法）
+     * @param first 首期档位（默认 2000 = 20%）
+     * @param step 常规档位（默认 1000 = 10%）
+     * @param after60 达 60% 且动态不在玩时的档位（默认 200 = 2%）
+     * @param tier60 60% 阈值（默认 6000 = 60%）
+     */
+    function setSellTiers(uint256 first, uint256 step, uint256 after60, uint256 tier60) external onlyOwner {
+        require(after60 > 0 && after60 <= step && step <= first && first <= 10000, "ZYTConfig: tier order");
+        require(tier60 > 0 && tier60 <= 10000, "ZYTConfig: tier60");
+        tierFirstBps = first;
+        tierStepBps = step;
+        tierAfter60Bps = after60;
+        tier60Bps = tier60;
+        emit SellTiersSet(first, step, after60, tier60);
     }
 
     /** @notice 设置地址参数（多签调用） */

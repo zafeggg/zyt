@@ -229,6 +229,7 @@ async function main() {
   await mining.setDeflation(deflationAddr);
   await forceSell.setKeeper(process.env.KEEPER_ADDRESS || deployer.address);
   await forceSell.setMining(miningAddr); // v9.2：卖出窗口复位授权（复投 / 迁移回填调用）
+  await forceSell.setConfig(configAddr); // v9.2b：卖币档位参数来源（未接线会回退默认常量）
   console.log("Deps wired.");
 
   // ---------- 11. 初始建池（2.1 万 USDT + 21 亿 ZYT，LP 锁仓） ----------
