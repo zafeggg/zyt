@@ -23,7 +23,7 @@
           @input="resetFlow"
         />
         <div class="pct-btns">
-          <span v-for="p in [20, 50, 70]" :key="p" class="pct" @click="setPct(p)">{{ p }}%</span>
+          <span v-for="p in [2, 5, 10, 20]" :key="p" class="pct" @click="setPct(p)">{{ p }}%</span>
           <span class="pct max" @click="setPct(100)">{{ $t("swap.max") }}</span>
         </div>
       </div>
@@ -611,11 +611,44 @@ async function doSell() {
   }
 }
 
-/** 百分比快捷：兑换按可兑换额度取比例，其余按钱包余额 */
+/**
+ * 各模式的「有效上限」——百分比快捷与 MAX 都以它为基数：
+ *  - 入金：min(钱包 USDT, 剩余累计额度, 500)，复投新一轮时上限为 500
+ *  - 买入：min(钱包 USDT, 剩余买额)
+ *  - 卖出：min(持币 ZYT, 当期剩余可卖额度)
+ */
+const effectiveMax = computed(() => {
+  if (mode.value === "deposit") {
+    const left = isNewRound.value ? 500 : depositCapLeft.value;
+    return Math.max(0, Math.min(balanceNum.value, left, 500));
+  }
+  if (mode.value === "buy") {
+    const quota = Number(formatEther(buyQuotaWei.value));
+    return quota > 0 ? Math.min(balanceNum.value, quota) : balanceNum.value;
+  }
+  const remain = sellRemainNum.value;
+  return remain > 0 ? Math.min(balanceNum.value, remain) : balanceNum.value;
+});
+
+/** 百分比快捷：2% / 5% / 10% / 20% / MAX；入金向下取整到 100U 倍数并夹在 100–500 */
 function setPct(p: number) {
-  const base = balanceNum.value;
-  if (!base) return;
-  amount.value = ((base * p) / 100).toFixed(4);
+  const base = effectiveMax.value;
+  if (!(base > 0)) return;
+  let v = (base * p) / 100;
+  if (mode.value === "deposit") {
+    v = Math.floor(v / 100) * 100;
+    if (v < 100) v = Math.min(100, Math.floor(base / 100) * 100); // 不足最小额时补到 100（受上限约束）
+    if (v > 500) v = 500;
+    if (v <= 0) {
+      amount.value = "";
+      resetFlow();
+      return;
+    }
+    amount.value = String(v);
+  } else {
+    // 非入金：向下截到 4 位小数，避免浮点四舍五入后超出上限
+    amount.value = String(Math.floor(v * 1e4) / 1e4);
+  }
   resetFlow();
 }
 
@@ -676,6 +709,7 @@ function refAddr(): string {
     }
     .pct-btns {
       display: flex;
+      flex-wrap: wrap;
       gap: 8px;
       margin-top: 8px;
       .pct {
