@@ -21,7 +21,7 @@ export default {
     hint: "选择要连接的钱包",
   },
   home: {
-    title: "众赢币",
+    title: "ZYT",
     totalSupply: "总供应量",
     currentSupply: "现有供应量",
     totalBurned: "总销毁数",

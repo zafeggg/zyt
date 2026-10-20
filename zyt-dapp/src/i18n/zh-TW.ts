@@ -23,7 +23,7 @@ export default {
     hint: "選擇要連接的錢包",
   },
   home: {
-    title: "眾贏幣",
+    title: "ZYT",
     totalSupply: "總供應量",
     currentSupply: "現有供應量",
     totalBurned: "總銷毀數",
