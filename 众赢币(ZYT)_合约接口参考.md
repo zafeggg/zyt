@@ -270,13 +270,25 @@ function soldAmount(address) view returns (uint256)
 
 ## 8. ZYTConfig（参数中心）
 
-数值参数（`setUint(key, value)`，多签）：`zytMaxSupply=21亿` · `minDeposit=100U` · `maxDeposit=500U` ·
+数值参数（`setUint(key, value)`，多签）：`zytMaxSupply=33亿` · `minDeposit=100U` · `maxDeposit=500U` ·
+`accountDepositCap=500U` · `depositStep=100U` ·
 `marketingRate=4000` · `poolRate=6000` · `powerRate=10000` · `dailyCompoundRate=100` ·
 `dynamicQuotaMul=5` · `staticExitMul=2` · `deflationRate=200` · `deflationFloor=500万枚` ·
 `baseSlippage=500` · `slippageTier1..4=1000/2000/4000/8000` · `transferSlippage=1000` ·
 `poolStage1USDT=1000万` · `poolStage2USDT=2000万` · `snapshotTime=28860`（08:01） ·
 `refLevel1Rate=700` · `refLevel2Rate=200` · `refLevel3Rate=50` · `refTechnicalRate=1000` ·
-`refDepth=20` · `swapFeeBps=25` · `deflationLpRate=200` · `buyQuotaRate=10000` · `totalSupplyCap=21亿`
+`refDepth=20` · `swapFeeBps=25` · `deflationLpRate=200` · `buyQuotaRate=10000` · `totalSupplyCap=33亿`
+
+**v9.2b 新增（滑点日环比定档 + 卖币档位参数化）**
+
+- `slippageDropBase=21000U`（固定基准，e18 计价；改此值四档等比缩放）
+- `slippageDropBps1..4=20/60/120/240`（0.2% / 0.6% / 1.2% / 2.4% → 42 / 126 / 252 / 504 U）
+- `tierFirstBps=2000` · `tierStepBps=1000` · `tierAfter60Bps=200` · `tier60Bps=6000`
+- 原子入口：`setSlippageDrops(base, d1, d2, d3, d4)`（严格递增校验）、`setSellTiers(first, step, after60, tier60)`（要求 `after60 ≤ step ≤ first ≤ 10000`）
+- 定档时点：`ZYTPoolManager.updateSnapshot()` 每日 08:01 做「今日池U vs 昨日池U」日环比定档，写入 `slippageBpsToday` 并锁定当日；`getCurrentSlippage()` 直接返回该值（0 = 尚未定档 → 基础 5%）
+- 卖币档位：首期 20% → 未达 60% 为 10% → 达 60% 时「动态在玩」10% / 「不在玩」2%
+- 「在玩」判据：`ZYTMining.dynamicPlaying(user)` = `directDownlineDeposit(user) ≥ depositTotal`，其中分子为一级直推累计入金（只在 `deposit` 内按 `referrerOf` 累加，不含本人奖励）
+- 双向联动出局：`isExited`（静态 2 倍）与 `dynamicExited`（动态 5 倍）任一置位，另一方同步结束并禁卖
 
 地址参数（`setAddress(key, addr)`）：见 §0 接线全集。
 
