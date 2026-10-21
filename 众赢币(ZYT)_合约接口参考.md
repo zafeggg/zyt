@@ -279,6 +279,23 @@ function soldAmount(address) view returns (uint256)
 `refLevel1Rate=700` · `refLevel2Rate=200` · `refLevel3Rate=50` · `refTechnicalRate=1000` ·
 `refDepth=20` · `swapFeeBps=25` · `deflationLpRate=200` · `buyQuotaRate=10000` · `totalSupplyCap=33亿`
 
+### 热切换接线表（2026-10-21 最终路线：沿用旧币旧池，只换逻辑）
+
+| 调用方 | 目标 | 方法 | 说明 |
+|---|---|---|---|
+| owner | ZYTToken（旧） | `setPool(新池管)` | 四点切换**最后**做 |
+| owner | ZYTToken（旧） | `setForceSell(新档位)` | |
+| owner | ZYTToken（旧） | `setLedger(新Mining)` | |
+| owner | ZYTToken（旧） | `setConfig(新Config)` | |
+| owner | 新 PoolManager | `setPair(旧pair)` / `setLocker(旧Creator)` / `setMining` / `setDeflation` | 先内后外 |
+| owner | 新 ForceSell | `setKeeper` / `setMining` / `setConfig` | 未接 config 时回退默认常量 |
+| owner | 新 Mining | `setLaunchDay(旧值)` / `setUserData` / `setConfig` | 账本回填（每批 50 人） |
+| owner | 旧 Referral | `setMining(新Mining)` | 推荐图沿用，不迁移 |
+| owner | 旧 Creator | `setPoolManager(新池管)` | 保持 skimDeflation 授权链 |
+| owner | 新 PoolManager | **`seedDividend(uint256)`** | 迁移后补分红池（实测需约 9.3 万 ZYT 覆盖未领分红）；从 owner 拉币入池并累加 `dividendPoolZyt` |
+
+> `PoolManager.injectZyt` / `setTreasury` / `treasury` 已删除；`ZYTDeflation` 无 setter，必须随新池管重部署。
+
 **v9.2b 新增（滑点日环比定档 + 卖币档位参数化）**
 
 - `slippageDropBase=21000U`（固定基准，e18 计价；改此值四档等比缩放）
