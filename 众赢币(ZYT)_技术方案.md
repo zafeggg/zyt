@@ -746,7 +746,76 @@ mapping(address => uint256) public userIndex;       // 去重索引
 
 ---
 
-## 10. v9.2b 现行设计（2026-10-20，本文件唯一有效设计口径）
+## 11. 热切换上线口径（2026-10-21 最终，优先于第 10 章）
+
+> 第 10 章是「新代币 + 新池 + 1:1 兑换」的资产迁移路线，**已作废**。最终执行的是下述逻辑热切换路线。
+
+### 11.1 路线：只换逻辑，不动资产
+
+| 项 | 定论 |
+|---|---|
+| 代币 | **沿用链上 `0xa64E6ab9…d546`**，不部署新币（现总量 17.49 亿，低于 21 亿上限，无需再铸造） |
+| 交易对 | **沿用 `0x9EC33C56…cD69`**（1,501,847,466 ZYT + 33,943 U），流动性一分不动 |
+| 兑换 | **不做 1:1 兑换**（代币没换，用户持仓天然延续），ZYTSwap 不部署 |
+| 兑换储备 | 不需要，与储备相关的「21 亿划拨」「初始价对齐」「补 12,135 U」全部取消 |
+| 重部署 | 仅 5 个逻辑合约：Config / Mining / PoolManager / ForceSell / Deflation |
+| 沿用不动 | Token / Pair / Creator / Referral / Compute（库） |
+| 停机 | 30–60 分钟（原资产迁移方案为 2–4 小时） |
+
+### 11.2 为什么 Deflation 也必须重部署
+
+`ZYTDeflation` 只有构造函数（config/pool/mining）、没有 setter，且要调 `pool.updateSnapshot()`、`mining.dailyRelease()`；池管与 Mining 换新后它必须跟着换。Token/Referral/Creator 均有 owner setter 可原地改指向。
+
+### 11.3 接线顺序（硬约束）
+
+```
+1 部署 Config / Mining / PoolManager / ForceSell / Deflation
+2 新池管：setPair(旧pair) → setLocker(旧Creator) → setMining → setDeflation
+3 新档位：setKeeper → setMining → setConfig
+4 新 Mining：setLaunchDay(旧值) + setUserData 分批回填（含 directDeposit）
+5 旧 Referral：setMining(新)，旧 Creator：setPoolManager(新池管)
+6 新 Config：setAddress 填 10 个地址
+7 代币四点：setPool → setForceSell → setLedger → setConfig
+8 旧 Config pause、新 Config unpause
+```
+> 先接新合约内部、后切代币指针：否则转账 hook 会打到未初始化的池或档位。脚本 `deploy-hotswap.mjs` 默认只做 1–6，加 `--switch` 才执行第 7 步。
+
+### 11.4 分红池实测（2026-10-21，已推翻原判断）
+
+| 指标 | 实测 |
+|---|---|
+| 旧池 `dividendPoolZyt` | 49,750,074.55 ZYT |
+| 全部用户未领分红合计 | **92,842.86 ZYT（仅 1 个地址）** |
+| 结论 | **无需 72 小时领取期、无需大额垫付**；迁移后只需 `seedDividend(≈9.3 万 ZYT)` 让新池能兑付该笔 pendingDividend |
+
+### 11.5 回退（本路线最大优势）
+
+旧合约全程只读、从未写入，因此回退 = 把代币四点与 Referral/Creator 授权改回旧地址，**几分钟完成、数据无损**：
+
+```
+token.setConfig(旧) → setLedger(旧) → setForceSell(旧) → setPool(旧)
+referral.setMining(旧) → creator.setPoolManager(旧) → 旧 Config.unpause()
+```
+脚本：`rollback.mjs`（支持 `--dry-run`）。边界：**已恢复交易且有成交后不可回退**。
+
+### 11.6 交付脚本
+
+| 脚本 | 作用 | 状态 |
+|---|---|---|
+| `deploy-hotswap.mjs` | 部署 5 合约 + 按序接线 + 逐步断言 + 记录基线；`--switch` 才切代币 | ✅ |
+| `rollback.mjs` | 六步回退，`--dry-run` | ✅ |
+| `post-hotswap-check.mjs` | 五组门禁断言：零资产移动 / 四点指向 / 新参数 / 接线完整性 / 运行态 | ✅ |
+| `dividend-drain-report.mjs` | 分红池与未领分红盘点、垫付缺口判定 | ✅（已主网实跑） |
+| `migrate.mjs` | snapshot（含旧币持仓、未领分红汇总、`directDeposit` 聚合）/ launchday / push / verify | ✅ |
+
+### 11.7 未完成项
+
+- **主网 fork 演练**：用例已写好（`test/hotswap-fork.test.js`，三阶段），但公共 RPC 不支持按块状态查询（publicnode 403、blxrbdn/1rpc 返回 `not supported`），需 keyed/archive 端点后补跑
+- 本项目 `output/` 内的《改动清单》3 条待追加
+
+---
+
+## 10. v9.2b 现行设计（2026-10-20，**已被第 11 章取代，仅作资产迁移路线留档**）
 
 > 替代第 0–8 章全部经济口径。真池单币模型（USDT↔ZYT），共 10 个合约（含 ZYTLiquidityCreator 与新增 ZYTSwap）。
 
