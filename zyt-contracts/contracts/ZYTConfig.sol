@@ -14,11 +14,12 @@ import "@openzeppelin/contracts/access/Ownable.sol";
  */
 contract ZYTConfig is Ownable {
     // ---------- 数值参数（基点 = 万分比） ----------
-    uint256 public zytMaxSupply = 33_000_000_000e18; // 33 亿（21 亿组池 + 12 亿 Treasury，一次铸出）
+    uint256 public zytMaxSupply = 2_100_000_000e18;  // 21 亿（热切换路线：沿用旧币，不再铸造）
     uint256 public minDeposit = 100e18;             // 最小入金 100U
     uint256 public maxDeposit = 500e18;             // 单笔上限 500U（可调）
     uint256 public accountDepositCap = 500e18;      // 单钱包累计入金上限 500U（可调；复投开新一轮按本笔重计）
     uint256 public depositStep = 100e18;            // 入金倍数步长 100U（可调，须 > 0）
+    uint256 public dynamicPlayingMul = 3;           // 「在玩」阈值 = 本人入金 × 3（一级直推累计入金）
     uint256 public marketingRate = 4000;            // 40% 生态（30% 代数 + 10% 技术）
     uint256 public poolRate = 6000;                 // 60% 组 LP 凭证销毁
     uint256 public powerRate = 10000;               // 算力倍率 1.0（1000U → 1000 算力）
@@ -57,8 +58,8 @@ contract ZYTConfig is Ownable {
     uint256 public swapFeeBps = 25;                 // Pancake V2 交易费 0.25%（getAmountOut 用）
     uint256 public deflationLpRate = 200;           // 每日报销初始 LP 凭证 2%
     uint256 public buyQuotaRate = 10000;            // 买额 = 入金 1:1（阶段 2 用）
-    // V9.2：总供应保险丝。ZYT 仅在建池时由 Creator 铸出一次（33 亿 = 21 亿组池 + 12 亿 Treasury）
-    uint256 public totalSupplyCap = 33_000_000_000e18;
+    // 总供应保险丝：21 亿上限（热切换路线沿用旧币，实际总量 17.49 亿，低于上限）
+    uint256 public totalSupplyCap = 2_100_000_000e18;
 
     // ---------- 地址 ----------
     address public marketAddress;       // 营销地址（Gnosis Safe 多签）
@@ -110,6 +111,7 @@ contract ZYTConfig is Ownable {
         else if (k == keccak256("maxDeposit")) maxDeposit = value;
         else if (k == keccak256("accountDepositCap")) accountDepositCap = value;
         else if (k == keccak256("depositStep")) { require(value > 0, "ZYTConfig: step 0"); depositStep = value; }
+        else if (k == keccak256("dynamicPlayingMul")) { require(value > 0, "ZYTConfig: mul 0"); dynamicPlayingMul = value; }
         else if (k == keccak256("marketingRate")) { _requireRate(value); marketingRate = value; }
         else if (k == keccak256("poolRate")) { _requireRate(value); poolRate = value; }
         else if (k == keccak256("powerRate")) { _requireRate(value); powerRate = value; }

@@ -387,7 +387,8 @@ contract ZYTMining is ReentrancyGuard {
      */
     function dynamicPlaying(address user) external view returns (bool) {
         UserState storage u = users[user];
-        return u.depositTotal > 0 && directDownlineDeposit[user] >= u.depositTotal;
+        return u.depositTotal > 0
+            && directDownlineDeposit[user] >= u.depositTotal * config.dynamicPlayingMul();
     }
 
     /**

@@ -9,7 +9,7 @@ const { ethers } = require("hardhat");
 
 const DEAD = "0x000000000000000000000000000000000000dEaD";
 const E18 = 10n ** 18n;
-const TOTAL_ZYT = 33_000_000_000n * E18;   // v9.2 全量：21 亿组池 + 12 亿 Treasury
+const TOTAL_ZYT = 2_100_000_000n * E18;   // v9.2 全量：21 亿组池 + 12 亿 Treasury
 const POOL_ZYT = 2_100_000_000n * E18;     // 注入底池部分（底池 2.1 万 U → 初始价不变）
 const SEED_USDT = 21_000n * E18;
 const DAY = 86400;
@@ -144,7 +144,6 @@ describe("ZYT v9", function () {
     await forceSell.setConfig(await config.getAddress()); // v9.2b：卖币档位参数来源
 
     // ---- 建池（v9.2：铸 33 亿，21 亿组池 + 12 亿转 Treasury） ----
-    await creator.setTreasury(root.address); // 模拟 W3 营销 Safe（上方已白名单，红线第 1 条）
     await usdt.faucet(SEED_USDT * 100n);
     await usdt.approve(await creator.getAddress(), SEED_USDT);
     await creator.createInitialPool(TOTAL_ZYT, POOL_ZYT, SEED_USDT);
@@ -607,44 +606,7 @@ describe("ZYT v9", function () {
     expect(await zyt.totalSupply()).to.equal(supplyMid);
   });
 
-  it("13. v9.2 治理补池 injectZyt：权限闭合 + 单次 5% 上限 + 只加 ZYT 侧不动池 U", async function () {
-    await config.setUint("poolStage1USDT", 21000n * E18);
-    await config.setUint("poolStage2USDT", 10_000_000n * E18);
-    await depositOf(bob, U500, ethers.ZeroAddress);
-    await usdt.connect(bob).faucet(U500);
-    await usdt.connect(bob).approve(await mining.getAddress(), U500);
-    await mining.connect(bob).buy(U500);
-
-    // treasury = root（模拟 W3 营销 Safe：已白名单，转入无税；Safe 不直接转 pair，走本合约拉币）
-    const seed = await zyt.balanceOf(bob.address);
-    await zyt.connect(bob).transfer(root.address, seed);
-    await pool.setTreasury(root.address);
-    expect(await pool.treasury()).to.equal(root.address);
-
-    const zytResBefore = await pool.poolZYT();
-    const usdtResBefore = await pool.poolUSDT();
-    const cap = zytResBefore * 500n / 10000n; // 单次上限 = 池内 ZYT 的 5%
-    const amount = seed / 2n;
-    expect(amount).to.be.lte(cap); // 正常额度内
-
-    // 越权：既非 owner 也非 treasury
-    await expect(pool.connect(alice).injectZyt(1n)).to.be.revertedWith("Pool: not auth");
-    // 超单次上限（上限校验先于拉币，余额不足也能命中）
-    await zyt.connect(root).approve(await pool.getAddress(), seed);
-    await expect(pool.connect(root).injectZyt(cap + 1n)).to.be.revertedWith("Pool: over inject cap");
-    // 未 approve → 拉币失败
-    await zyt.connect(root).approve(await pool.getAddress(), 0n);
-    await expect(pool.connect(root).injectZyt(1n)).to.be.reverted;
-
-    // 正常注入：只加厚 ZYT 侧，池 U 不变；累计留痕
-    const rootBefore = await zyt.balanceOf(root.address); // 含建池时转入的 12 亿 Treasury
-    await zyt.connect(root).approve(await pool.getAddress(), seed);
-    await pool.connect(root).injectZyt(amount);
-    expect(await pool.poolZYT()).to.equal(zytResBefore + amount);
-    expect(await pool.poolUSDT()).to.equal(usdtResBefore);
-    expect(await pool.totalZytInjected()).to.equal(amount);
-    expect(await zyt.balanceOf(root.address)).to.equal(rootBefore - amount);
-  });
+  // 用例 13（injectZyt 治理补池）已随 Treasury 补池能力一并移除，编号保留避免文档引用错位
 
   it("14. v9.2 迁移接口：setUserData 批量回填（含分红游标）+ launchDay 继承 + 窗口重置首期", async function () {
     const empty = [0n, 0n, 0n, 0n, 0n, 0n, 0n, 0n, 0n, 0n, 0n, 0n, 0n, false, false];
@@ -816,17 +778,24 @@ describe("ZYT v9", function () {
     expect(await mining.dynamicPlaying(carol.address)).to.equal(false);
     expect(await forceSell.tierBpsOf(carol.address)).to.equal(200n);
 
-    // carol 的一级直推入金 500U → 在玩 → 10% 档
-    const d1 = (await ethers.getSigners())[10];
+    // 3 倍判据：两名直推共 1,000U（2 倍）仍不足 → 不在玩（2% 档）
+    const [d1, d2, d3] = (await ethers.getSigners()).slice(10, 13);
     await depositOf(d1, U500, carol.address);
-    expect(await mining.directDownlineDeposit(carol.address)).to.equal(U500);
+    await depositOf(d2, U500, carol.address);
+    expect(await mining.directDownlineDeposit(carol.address)).to.equal(U500 * 2n);
+    expect(await mining.dynamicPlaying(carol.address)).to.equal(false);
+    expect(await forceSell.tierBpsOf(carol.address)).to.equal(200n);
+
+    // 补到 3 倍（1,500U）→ 在玩 → 10% 档
+    await depositOf(d3, U500, carol.address);
+    expect(await mining.directDownlineDeposit(carol.address)).to.equal(U500 * 3n);
     expect(await mining.dynamicPlaying(carol.address)).to.equal(true);
     expect(await forceSell.tierBpsOf(carol.address)).to.equal(1000n);
 
-    // 口径边界：直推累计只看一级（d1 的下线不计入 carol）
-    const d2 = (await ethers.getSigners())[11];
-    await depositOf(d2, U500, d1.address);
-    expect(await mining.directDownlineDeposit(carol.address)).to.equal(U500);
+    // 口径边界：只看一级（d1 的下线不计入 carol）
+    const d4 = (await ethers.getSigners())[13];
+    await depositOf(d4, U500, d1.address);
+    expect(await mining.directDownlineDeposit(carol.address)).to.equal(U500 * 3n);
     expect(await mining.directDownlineDeposit(d1.address)).to.equal(U500);
   });
 });

@@ -47,11 +47,6 @@ contract ZYTPoolManager is Ownable, ReentrancyGuard {
     uint256 public peakPoolUSDT;        // 历史峰值池 USDT（v9.2 降级为纯统计，不再作滑点基准）
     uint256 public totalLpBurned;       // 累计销毁 LP（入金 60% 凭证）
 
-    // ---------- v9.2 治理补池 ----------
-    address public treasury;            // 补池资金来源（W3 营销 Safe；需先 approve 本合约）
-    uint256 public totalZytInjected;    // 累计补池 ZYT
-    uint256 public constant INJECT_CAP_BPS = 500; // 单次上限 = 池内 ZYT 的 5%
-
     uint256 public dividendPoolZyt;     // 分红池（ZYT）：通缩 1% + 卖币滑点 30% + 转账税 30%
     uint256 public reserveUSDT;         // 自持 USDT（组 LP 残留，兑付兜底储备）
 
@@ -62,8 +57,6 @@ contract ZYTPoolManager is Ownable, ReentrancyGuard {
     event Deflated(uint256 burned, uint256 dividend, uint256 usdtResynced);
     event SlippageCollected(uint256 rate, uint256 toMarket, uint256 toDividend, uint256 toBurn);
     event DividendAccrued(uint256 amount);
-    event TreasurySet(address indexed treasury);
-    event ZytInjected(address indexed from, uint256 amount, uint256 poolZytAfter, uint256 totalInjected);
 
     modifier onlyMining() {
         require(msg.sender == mining, "Pool: only mining");
@@ -108,31 +101,16 @@ contract ZYTPoolManager is Ownable, ReentrancyGuard {
         deflation = _deflation;
     }
 
-    /// @notice 设置补池资金来源（W3 营销 Safe；须先 approve 本合约再调 injectZyt）
-    function setTreasury(address _treasury) external onlyOwner {
-        treasury = _treasury;
-        emit TreasurySet(_treasury);
-    }
-
     /**
-     * @notice 治理补池：从 treasury 拉 ZYT 注入 pair 并 sync（不组 LP，直接加厚底池 ZYT 侧）
-     * @dev 部署顺序红线（清单第八章第 2 条）：Safe 不可直接 transfer 到 pair（被卖闸 revert），
-     *      必须走本函数拉币；须先 setWhiteList(treasury)（红线第 1 条），否则 Safe 收到的 ZYT 会被
-     *      登记强卖义务。单次上限 = 池内 ZYT 的 5%，防误操作砸池。
-     * @param amount 注入的 ZYT 数量
+     * @notice 补充分红池（热切换专用）：从 owner 拉 ZYT 进本合约并累加 dividendPoolZyt
+     * @dev 旧 PoolManager 的分红余额无法整体搬运（payoutDividend 是 onlyMining），
+     *      迁移后按 snapshot 统计的残值由项目方注资垫付，保证老用户未领分红可兑付。
      */
-    function injectZyt(uint256 amount) external nonReentrant returns (uint256) {
-        require(msg.sender == config.owner() || msg.sender == treasury, "Pool: not auth");
-        require(treasury != address(0), "Pool: treasury unset");
+    function seedDividend(uint256 amount) external onlyOwner nonReentrant {
         require(amount > 0, "Pool: zero");
-        (uint256 zRes, ) = _reserves();
-        require(amount <= zRes * INJECT_CAP_BPS / 10000, "Pool: over inject cap");
-
-        IERC20(zytToken).transferFrom(treasury, pair, amount);
-        IUniswapV2Pair(pair).sync();
-        totalZytInjected += amount;
-        emit ZytInjected(treasury, amount, zRes + amount, totalZytInjected);
-        return amount;
+        IERC20(zytToken).transferFrom(msg.sender, address(this), amount);
+        dividendPoolZyt += amount;
+        emit DividendAccrued(amount);
     }
 
     // ---------- 视图 ----------
