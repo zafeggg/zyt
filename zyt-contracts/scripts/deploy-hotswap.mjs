@@ -86,6 +86,12 @@ async function main() {
       signer
     );
     if ((await tk.owner()).toLowerCase() !== signer.address.toLowerCase()) die("签名者不是代币 owner");
+    // 部署阶段会把新 Config pause，切换前必须先 unpause
+    const cfgC = new Contract(N.ZYTConfig, ["function paused() view returns (bool)", "function unpause()"], signer);
+    if (await cfgC.paused()) {
+      await (await cfgC.unpause()).wait();
+      log("✓ 新 Config 已 unpause");
+    }
     log("\n[switch-only] 四点切换（顺序：池 → 档位 → 账本 → Config）");
     await (await tk.setPool(N.ZYTPoolManager)).wait();
     await (await tk.setForceSell(N.ZYTForceSell)).wait();
@@ -202,6 +208,37 @@ async function main() {
   const newDay = await new Contract(mining.addr, ["function launchDay() view returns (uint64)"], provider).launchDay();
   if (newDay !== oldDay) die(`launchDay 继承失败：${newDay} != ${oldDay}`);
   log(`✓ launchDay 已继承 ${oldDay}`);
+
+  // v9.2b 资金级必填：三个分账地址缺失会让入金 40% 分账直接 revert
+  const oldCfgC = new Contract(
+    OLD.config,
+    [
+      "function marketAddress() view returns (address)",
+      "function technicalAddress() view returns (address)",
+      "function blackHole() view returns (address)",
+    ],
+    provider
+  );
+  const pick = async (envKey, getter) => {
+    if (env[envKey]) return env[envKey];
+    try {
+      return await oldCfgC[getter]();
+    } catch {
+      return "";
+    }
+  };
+  const marketAddr = await pick("MARKET_ADDRESS", "marketAddress");
+  const techAddr = await pick("TECHNICAL_ADDRESS", "technicalAddress");
+  const blackHoleAddr = await pick("BLACK_HOLE", "blackHole");
+  for (const [n, a] of [
+    ["marketAddress", marketAddr],
+    ["technicalAddress", techAddr],
+    ["blackHole", blackHoleAddr],
+  ]) {
+    if (!a || a === "0x0000000000000000000000000000000000000000")
+      die(`缺少 ${n}（旧 Config 读不到，请用环境变量 ${n === "marketAddress" ? "MARKET_ADDRESS" : n === "technicalAddress" ? "TECHNICAL_ADDRESS" : "BLACK_HOLE"} 传入）`);
+  }
+  log(`✓ 分账地址：market ${marketAddr} / technical ${techAddr} / blackHole ${blackHoleAddr}`);
   for (const [k, v] of [
     ["zyt", OLD.token],
     ["usdt", OLD.usdt],
@@ -213,10 +250,13 @@ async function main() {
     ["referral", OLD.referral],
     ["creator", OLD.creator],
     ["keeperAddress", KEEPER],
+    ["marketAddress", marketAddr],
+    ["technicalAddress", techAddr],
+    ["blackHole", blackHoleAddr],
   ]) {
     await (await cfg.contract.setAddress(k, v)).wait();
   }
-  log("✓ 10 个地址已写入新 Config（marketAddress / technicalAddress / blackHole 需按部署记录补）");
+  log("✓ 13 个地址已写入新 Config（含分账 3 个，缺任一项入金会直接 revert）");
 
   // ---------- 5. 旧 Referral / 旧 Creator 授权 ----------
   log("\n[5/6] 旧 Referral / Creator 授权");
@@ -243,7 +283,12 @@ async function main() {
     if ((await token.configAddr()).toLowerCase() !== cfg.addr.toLowerCase()) die("setConfig 未生效");
     log("✓ 四点切换完成并校验通过");
   } else {
-    log("\n[6/6] 跳过代币切换（未传 --switch）。核对无误后执行：node scripts/deploy-hotswap.mjs --switch");
+    // 半激活加固：新合约已可用但代币仍指旧合约，pause 新 Config 阻断任何人直接调用
+    await (await cfg.contract.pause()).wait();
+    const pausedNow = await new Contract(cfg.addr, ["function paused() view returns (bool)"], provider).paused();
+    if (!pausedNow) die("新 Config pause 失败");
+    log("✓ 新 Config 已 pause（切换前不可被直接调用）");
+    log("\n[6/6] 跳过代币切换（未传 --switch）。核对无误后执行：node scripts/deploy-hotswap.mjs --switch-only");
   }
 
   // ---------- 落盘 ----------
