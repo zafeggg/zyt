@@ -49,6 +49,7 @@ const OLD_TOKEN = process.env.OLD_TOKEN || "";
 const NEW_MINING = process.env.NEW_MINING || "";
 const NEW_TOKEN = process.env.NEW_TOKEN || "";
 const OLD_CONFIG = process.env.OLD_CONFIG || "";
+const OLD_POOL = process.env.OLD_POOL || ""; // 选填：用于扣除 pair/Pool 持仓，修正「场外旧币」口径
 const NEW_CONFIG = process.env.NEW_CONFIG || "";
 const FROM_BLOCK = Number(process.env.FROM_BLOCK || 0);
 const TO_BLOCK = process.env.TO_BLOCK ? Number(process.env.TO_BLOCK) : null;
@@ -99,6 +100,7 @@ const MINING_WRITE_ABI = [
 const TOKEN_ABI = [
   "function getUserCount() view returns (uint256)",
   "function getUserAt(uint256) view returns (address)",
+  "function balanceOf(address) view returns (uint256)", // v9.2b：旧币持仓统计（对账/规模评估）
 ];
 const CONFIG_ABI = [
   "function owner() view returns (address)",
