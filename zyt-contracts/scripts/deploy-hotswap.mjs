@@ -22,6 +22,7 @@ const env = process.env;
 const RPC = env.RPC_URL || "http://127.0.0.1:8545";
 const CHAIN_ID = Number(env.CHAIN_ID || 56);
 const SWITCH = process.argv.includes("--switch");
+const SWITCH_ONLY = process.argv.includes("--switch-only");
 
 const OLD = {
   token: env.OLD_TOKEN || "",
@@ -59,6 +60,49 @@ async function main() {
   const signer = new Wallet(env.PRIVATE_KEY, provider);
   log("部署账户：", signer.address);
   log("链 ID：", CHAIN_ID, " 目标：", (await provider.getBlockNumber()));
+
+  // ---------- 仅切换模式：复用已部署记录，只做代币四点切换 ----------
+  if (SWITCH_ONLY) {
+    const f = env.HOTSWAP_FILE;
+    if (!f) die("--switch-only 需要 HOTSWAP_FILE 指向部署记录");
+    const p = path.isAbsolute(f) ? f : path.join(ROOT, f);
+    if (!fs.existsSync(p)) die(`找不到部署记录：${p}`);
+    const rec = JSON.parse(fs.readFileSync(p, "utf8"));
+    const N = rec.new;
+    const O = rec.old;
+    const tk = new Contract(
+      O.token,
+      [
+        "function owner() view returns (address)",
+        "function pool() view returns (address)",
+        "function forceSell() view returns (address)",
+        "function ledger() view returns (address)",
+        "function configAddr() view returns (address)",
+        "function setPool(address)",
+        "function setForceSell(address)",
+        "function setLedger(address)",
+        "function setConfig(address)",
+      ],
+      signer
+    );
+    if ((await tk.owner()).toLowerCase() !== signer.address.toLowerCase()) die("签名者不是代币 owner");
+    log("\n[switch-only] 四点切换（顺序：池 → 档位 → 账本 → Config）");
+    await (await tk.setPool(N.ZYTPoolManager)).wait();
+    await (await tk.setForceSell(N.ZYTForceSell)).wait();
+    await (await tk.setLedger(N.ZYTMining)).wait();
+    await (await tk.setConfig(N.ZYTConfig)).wait();
+    for (const [k, got, exp] of [
+      ["pool", await tk.pool(), N.ZYTPoolManager],
+      ["forceSell", await tk.forceSell(), N.ZYTForceSell],
+      ["ledger", await tk.ledger(), N.ZYTMining],
+      ["config", await tk.configAddr(), N.ZYTConfig],
+    ]) {
+      if (String(got).toLowerCase() !== String(exp).toLowerCase()) die(`切换后 ${k} 未生效（${got}）`);
+    }
+    log("✓ 四点切换完成并校验通过；未改动任何资产与账本");
+    log("下一步：node scripts/post-hotswap-check.mjs（HOTSWAP_FILE 同上）");
+    return;
+  }
 
   // ---------- 0. 前置校验：代币当前指向必须还是旧合约 ----------
   const token = new Contract(
