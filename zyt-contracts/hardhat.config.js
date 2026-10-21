@@ -23,6 +23,15 @@ module.exports = {
       // 背景：deploy.js 在 localhost 下部分部署会走 fallback 路径取 blockGasLimit 作为 tx gasLimit，
       // 默认值偏高时抛 "gas limit exceeds transaction gas cap"。压低后本地端到端可稳定跑通。
       blockGasLimit: 15000000,
+      // v9.2b 热切换演练：设置 FORK_RPC 即把 hardhat 网络切到主网 fork，
+      // 不设则保持纯本地（不影响常规测试）。
+      //   FORK_RPC=https://bsc-rpc.publicnode.com FORK_BLOCK=<可选> npx hardhat test test/hotswap-fork.test.js
+      forking: process.env.FORK_RPC
+        ? {
+            url: process.env.FORK_RPC,
+            blockNumber: process.env.FORK_BLOCK ? Number(process.env.FORK_BLOCK) : undefined,
+          }
+        : undefined,
     },
     localhost: {
       url: "http://127.0.0.1:8545",
