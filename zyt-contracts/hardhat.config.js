@@ -19,6 +19,10 @@ module.exports = {
       // 移除显式 gas（显式 gasLimit 超过节点硬编码 tx cap 16.7M 会报错）；
       // 使用自动估算，估算值不超过 cap 即可
       allowUnlimitedContractSize: false,
+      // BSC fork 必需：Hardhat 不认识链 56 的硬分叉激活历史，fork 指定块时会报
+      // "No known hardfork for execution on historical block"。显式指定 paris
+      // （与 solidity 编译目标一致，BSC 支持该指令集）即可绕过。
+      hardfork: "merge", // Hardhat 中 "merge" 即 Paris（无 PUSH0 等新指令）
       // 2026-09-25：blockGasLimit 显式设为 15M（< 节点 txGasCap 2^24=16.77M）。
       // 背景：deploy.js 在 localhost 下部分部署会走 fallback 路径取 blockGasLimit 作为 tx gasLimit，
       // 默认值偏高时抛 "gas limit exceeds transaction gas cap"。压低后本地端到端可稳定跑通。
