@@ -126,7 +126,16 @@ async function main() {
     ],
     [
       "旧 Config.unpause()",
-      () => new Contract(OLD.config, ["function unpause()"], signer).unpause(),
+      async () => {
+        // 幂等：已恢复则跳过，避免 Pausable 重复 unpause 直接 revert
+        const cfg = new Contract(
+          OLD.config,
+          ["function paused() view returns (bool)", "function unpause()"],
+          signer
+        );
+        if (!(await cfg.paused())) return null;
+        return cfg.unpause();
+      },
     ],
   ];
 
@@ -137,7 +146,7 @@ async function main() {
     }
     log(`→ ${name}`);
     const tx = await run();
-    await tx.wait();
+    if (tx) await tx.wait(); // 幂等步骤可能返回 null（无需发送）
   }
 
   if (DRY) {

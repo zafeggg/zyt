@@ -194,6 +194,14 @@ async function main() {
 
   // ---------- 4. 新 Config 地址表 ----------
   log("\n[4/6] 新 Config 地址表");
+  // v9.2b：继承旧 launchDay（红线：不继承会让老用户复利因子归 1、算力缩水）
+  const oldMiningC = new Contract(OLD.mining, ["function launchDay() view returns (uint64)"], provider);
+  const oldDay = await oldMiningC.launchDay();
+  if (oldDay === 0n) die("旧 Mining launchDay = 0，无法继承（检查 OLD_MINING）");
+  await (await mining.contract.setLaunchDay(oldDay)).wait();
+  const newDay = await new Contract(mining.addr, ["function launchDay() view returns (uint64)"], provider).launchDay();
+  if (newDay !== oldDay) die(`launchDay 继承失败：${newDay} != ${oldDay}`);
+  log(`✓ launchDay 已继承 ${oldDay}`);
   for (const [k, v] of [
     ["zyt", OLD.token],
     ["usdt", OLD.usdt],
