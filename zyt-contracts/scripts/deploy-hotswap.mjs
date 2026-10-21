@@ -69,6 +69,7 @@ async function main() {
       "function forceSell() view returns (address)",
       "function ledger() view returns (address)",
       "function configAddr() view returns (address)",
+      "function totalSupply() view returns (uint256)",
       "function setPool(address)",
       "function setForceSell(address)",
       "function setLedger(address)",
@@ -88,6 +89,22 @@ async function main() {
     if (cur.toLowerCase() !== exp.toLowerCase()) die(`代币 ${name} 当前指向 ${cur}，与预期旧地址不符`);
   }
   log("✓ 前置校验：代币四点仍指向旧合约，owner 一致");
+
+  // 基线快照（供 post-hotswap-check.mjs 断言「零资产移动」）
+  const pairC = new Contract(
+    OLD.pair,
+    ["function getReserves() view returns (uint112,uint112,uint32)", "function token0() view returns (address)"],
+    provider
+  );
+  const [r0, r1] = await pairC.getReserves();
+  const zytIs0 = (await pairC.token0()).toLowerCase() === OLD.token.toLowerCase();
+  const baseline = {
+    supply: (await token.totalSupply()).toString(),
+    zyt: (zytIs0 ? r0 : r1).toString(),
+    usdt: (zytIs0 ? r1 : r0).toString(),
+    at: new Date().toISOString(),
+  };
+  log(`✓ 基线：总量 ${baseline.supply}，池 ${baseline.zyt} ZYT / ${baseline.usdt} U`);
 
   // ---------- 1. 部署 5 个逻辑合约 ----------
   const deploy = async (name, args = [], libs = {}) => {
@@ -197,6 +214,7 @@ async function main() {
         },
         old: OLD,
         keeper: KEEPER,
+        baseline,
       },
       null,
       2
