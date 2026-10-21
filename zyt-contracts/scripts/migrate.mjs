@@ -235,8 +235,16 @@ async function cmdSnapshot() {
   if (users.length === 0) die("枚举到 0 个用户，请检查 FROM_BLOCK / 地址是否正确");
 
   const records = [];
+  let sumZytBal = 0n;      // 全量地址旧币余额合计（含 pair / Pool，稍后扣除）
+  let sumPendingDiv = 0n;  // 未领分红合计（决定新池 seedDividend 垫付额）
   for (let i = 0; i < users.length; i++) {
-    records.push(await readUser(oldMining, users[i]));
+    const rec = await readUser(oldMining, users[i]);
+    // v9.2b：旧币持仓（迁移规模与对账用；不写入新合约）
+    const bal = await oldToken.balanceOf(users[i]);
+    rec.zytBalance = bal.toString();
+    sumZytBal += bal;
+    sumPendingDiv += BigInt(rec.pendingDividend || "0");
+    records.push(rec);
     if ((i + 1) % 200 === 0) log(`  ...已读 ${i + 1}/${users.length}`);
   }
 
@@ -264,6 +272,23 @@ async function cmdSnapshot() {
     log("[严重警告] 未提供 OLD_CONFIG，无法读 referrerOf → directDeposit 全为 0（老用户将掉 2% 档）");
   }
 
+  // v9.2b：修正「场外旧币」统计口径 —— userList 里含 pair 与 Pool 合约地址，
+  // 它们持仓属于池内/分红池而非场外，必须扣除，否则会高估迁移规模（实测曾多算 16 亿）
+  let excludedZyt = 0n;
+  try {
+    const poolC = new Contract(OLD_POOL, ["function pair() view returns (address)"], provider);
+    const pairAddr = (await poolC.pair()).toLowerCase();
+    for (const addr of [pairAddr, OLD_POOL.toLowerCase()]) {
+      if (!users.some((u) => u.toLowerCase() === addr)) continue;
+      excludedZyt += await oldToken.balanceOf(addr);
+    }
+    log(`统计口径修正：已从场外扣除 pair / Pool 持仓 ${excludedZyt}（wei）`);
+  } catch (e) {
+    log(`[警告] 无法读取 pair / Pool 持仓，场外统计可能偏高：${e.shortMessage || e.message}`);
+  }
+  const offPoolZyt = sumZytBal > excludedZyt ? sumZytBal - excludedZyt : 0n;
+  log(`旧币场外合计（净）：${offPoolZyt}（wei）；未领分红合计：${sumPendingDiv}（wei）`);
+
   ensureDir(OUT_DIR);
   const out = {
     meta: {
@@ -274,6 +299,10 @@ async function cmdSnapshot() {
       fromBlock: FROM_BLOCK,
       toBlock: latest,
       userCount: records.length,
+      // v9.2b 汇总：迁移规模与分红垫付依据
+      totalZytBalance: sumZytBal.toString(),
+      offPoolZyt: offPoolZyt.toString(),
+      totalPendingDividend: sumPendingDiv.toString(),
     },
     launchDay,
     users: records,
