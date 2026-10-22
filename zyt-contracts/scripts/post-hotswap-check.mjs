@@ -151,7 +151,32 @@ async function main() {
   ok("新 Mining launchDay 已继承", (await mining.launchDay()) > 0n, String(await mining.launchDay()));
   eq("新 Mining config = 新 Config", await mining.config(), NEW.ZYTConfig);
 
-  console.log("\n=== E. 运行态参考 ===");
+  console.log("\n=== E. 白名单（防强卖义务 / 免税）===");
+  const cfgWL = new Contract(
+    NEW.ZYTConfig,
+    ["function blackHole() view returns (address)", "function keeperAddress() view returns (address)"],
+    provider
+  );
+  const tokenWL = new Contract(OLD.token, ["function isWhiteList(address) view returns (bool)"], provider);
+  const mustWL = [
+    ["新池管", NEW.ZYTPoolManager],
+    ["blackHole", await cfgWL.blackHole().catch(() => "")],
+    ["keeper", await cfgWL.keeperAddress().catch(() => "")],
+  ];
+  for (const [n, a] of mustWL) {
+    if (!a) {
+      ok(`${n} 白名单`, false, "地址读取失败");
+      continue;
+    }
+    ok(`${n} 在白名单`, await tokenWL.isWhiteList(a), a);
+  }
+  if (env.WHITELIST_ADDRS) {
+    for (const a of env.WHITELIST_ADDRS.split(",").map((s) => s.trim()).filter(Boolean)) {
+      ok(`额外地址在白名单`, await tokenWL.isWhiteList(a), a);
+    }
+  }
+
+  console.log("\n=== F. 运行态参考 ===");
   console.log(`当日滑点档位：${await pool.getCurrentSlippage()} bps（0 表示尚未定档，回退基础 5%）`);
   console.log(`新池分红池：${formatEther(await pool.dividendPoolZyt())} ZYT（需 ≥ snapshot 的 totalPendingDividend）`);
 

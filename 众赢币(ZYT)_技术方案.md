@@ -898,7 +898,7 @@ referral.setMining(旧) → creator.setPoolManager(旧) → 旧 Config.unpause()
 
 1. **接线顺序**：先接新合约内部（池管 setPair/setLocker/setMining/setDeflation、档位 setKeeper/setMining/setConfig、Mining setLaunchDay），最后才切代币四点；顺序颠倒会让转账 hook 打到未初始化池，交易全部 revert。
 2. **Treasury 与 injectZyt 已删除**（2026-10-21）：不再有 12 亿划转与补池入口，改由 `PoolManager.seedDividend` 补充分红池（当前实测只需约 9.3 万 ZYT 覆盖未领分红）。
-3. 白名单免税不记账，靠多签自律。
+3. **白名单必须覆盖新池管与全部运营多签**：`ZYTToken.isWhiteList` 为 false 的地址收到 ZYT 即被登记「首期 20% 强卖义务」，到期未卖由 keeper 销毁。新 `PoolManager`、`blackHole`、`keeper`、owner 及各运营多签都要在切换前 `setWhiteList(addr, true)`——旧池管本就处于白名单，新池管漏配会导致卖币时池内 ZYT 被销毁。批量地址可用 `WHITELIST_ADDRS` 传入，`deploy-hotswap` 自动设置、`post-hotswap-check` 已加断言。
 4. `launchDay` 必须由 `setLaunchDay` 继承旧值，否则老用户复利因子归 1、算力缩水。
 5. keeper：每日 08:01 `dailySnapshot`（通缩 + 定档），15 / 29 日凌晨 `settleExpired` 结算。
 6. 转账视同卖出：扣 10% 滑点，转出额按当时价计入发送方累计提取（闭合静态2倍绕过）；接收方继承强制卖出计时、无本金基础。

@@ -270,6 +270,39 @@ async function main() {
     die(`旧合约授权失败（owner 可能不是部署账户）：${e.shortMessage || e.message}`);
   }
 
+  // ---------- 5.5 白名单（防强卖义务） ----------
+  // 逻辑：非白名单地址收到 ZYT 会被登记「首期 20% 强卖义务」，到期未卖由 keeper 销毁。
+  //   新池管必须在白名单内（旧池管就是白名单），否则卖币时池子被登记义务 → 池内 ZYT 被销毁。
+  //   blackHole / keeper / owner 与额外多签一并加入，避免运营地址被动销毁。
+  log("\n[5.5/6] 白名单（防强卖义务）");
+  const tokenWL = new Contract(
+    OLD.token,
+    ["function setWhiteList(address,bool)", "function isWhiteList(address) view returns (bool)"],
+    signer
+  );
+  const extra = (env.WHITELIST_ADDRS || "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .map((a, i) => [`额外地址${i + 1}`, a]);
+  const wlList = [
+    ["新池管", pool.addr],
+    ["blackHole", blackHoleAddr],
+    ["keeper", KEEPER],
+    ["owner", signer.address],
+    ...extra,
+  ];
+  for (const [n, a] of wlList) {
+    if (!a || a === "0x0000000000000000000000000000000000000000") continue;
+    if (await tokenWL.isWhiteList(a)) {
+      log(`  = ${n.padEnd(10)} ${a}（已在白名单）`);
+      continue;
+    }
+    await (await tokenWL.setWhiteList(a, true)).wait();
+    if (!(await tokenWL.isWhiteList(a))) die(`${n} 白名单设置失败`);
+    log(`  + ${n.padEnd(10)} ${a}`);
+  }
+
   // ---------- 6. 代币四点切换（需 --switch） ----------
   if (SWITCH) {
     log("\n[6/6] 代币四点切换（顺序：池 → 档位 → 账本 → Config）");
