@@ -9,7 +9,7 @@
 > 2. 《ZYT合约接口参考》§8 参数表
 >
 > 历史章节中最容易误用的几处：GST 全链移除（不存在 GST 计价层）；滑点不再以「GST 数量 / 历史峰值」为基准；
-> 不存在买入白名单（买币门槛 = 阶段门控 + 买额）；总量为 **33 亿**（21 亿组池 + 12 亿 Treasury），非 21 亿。
+> 不存在买入白名单（买币门槛 = 阶段门控 + 买额）；总量为 **21 亿上限、不铸造新币**（2026-10-21 定稿：沿用链上旧币 17.49 亿，12 亿 Treasury 方案作废）。
 
 > ## ⚠️ v8 口径变更说明（2026-09-22，历史存档）
 >
@@ -824,7 +824,7 @@ referral.setMining(旧) → creator.setPoolManager(旧) → 旧 Config.unpause()
 | # | 项 | 旧口径 | 现行（v9.2b） |
 |---|---|---|---|
 | 1 | 代币结构 | USDT→GST→ZYT 双币 | USDT↔ZYT 单币直换，GST 全链移除 |
-| 2 | 总量 | 21 亿 | **33 亿** = 21 亿组池 + 12 亿 Treasury（W3 营销 Safe） |
+| 2 | 总量 | 21 亿 | **21 亿上限，不铸造**（沿用链上旧币；12 亿 Treasury 于 2026-10-21 作废） |
 | 3 | 滑点基准 | GST 数量 / 历史峰值 / 当日快照比例 | **固定 2.1 万 U 基准 + 每日 08:01 日环比定档** |
 | 4 | 滑点档位 | 1/2/3/4% | **0.2 / 0.6 / 1.2 / 2.4%**（= 42/126/252/504 U） |
 | 5 | 卖币窗口 | 15 天 × 4 期 | **每月 14 / 28 日**（北京时间）全天，窗口外禁卖 |
@@ -888,7 +888,7 @@ referral.setMining(旧) → creator.setPoolManager(旧) → 旧 Config.unpause()
 
 ### 10.7 迁移（一次性、非 proxy）
 
-1. 新旧合约并行部署；`setWhiteList(Treasury)` 必须先于 12 亿 ZYT 转入。
+1. 只部署 5 个逻辑合约（Config / Mining / PoolManager / ForceSell / Deflation），沿用旧币与旧池，不铸币、不建池、无 Treasury 划转（本项已被第 11 章取代）。
 2. `migrate.mjs snapshot`（Deposited 事件 + userList 并集，读旧 UserState、`dividendClaimedDay`，并按旧 Referral 的 `referrerOf` 聚合一级直推累计入金）→ `launchday` 继承 → `push`（每批 50 人 `setUserData`）→ `verify` 逐户比对。
 3. 老用户卖出窗口在迁移日重置为首期 20%；`pendingDividend` 原值回填。
 4. 停机 2–4h；旧币经 `ZYTSwap` 1:1 兑换，窗口 14 天（owner 可提前关闭），兑入旧币统一销毁。
@@ -896,8 +896,8 @@ referral.setMining(旧) → creator.setPoolManager(旧) → 旧 Config.unpause()
 
 ### 10.8 部署与运维红线
 
-1. `setWhiteList(Treasury Safe)` 必须先于 12 亿 ZYT 转入；顺序颠倒无清理函数，只能重新部署。
-2. Safe 不可直接转 pair；补池必须走 `PoolManager.injectZyt`（单次 ≤ 池内 ZYT 的 5%，Safe 先 approve）。
+1. **接线顺序**：先接新合约内部（池管 setPair/setLocker/setMining/setDeflation、档位 setKeeper/setMining/setConfig、Mining setLaunchDay），最后才切代币四点；顺序颠倒会让转账 hook 打到未初始化池，交易全部 revert。
+2. **Treasury 与 injectZyt 已删除**（2026-10-21）：不再有 12 亿划转与补池入口，改由 `PoolManager.seedDividend` 补充分红池（当前实测只需约 9.3 万 ZYT 覆盖未领分红）。
 3. 白名单免税不记账，靠多签自律。
 4. `launchDay` 必须由 `setLaunchDay` 继承旧值，否则老用户复利因子归 1、算力缩水。
 5. keeper：每日 08:01 `dailySnapshot`（通缩 + 定档），15 / 29 日凌晨 `settleExpired` 结算。

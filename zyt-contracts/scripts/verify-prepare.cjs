@@ -24,7 +24,15 @@ const OUT = path.join(ROOT, "verify-json");
 const record = JSON.parse(
   fs.readFileSync(path.join(ROOT, "deployments", "mainnet-20260926.json"), "utf8")
 );
-const C = record.contracts;
+// 兼容两种部署记录：旧路线 { contracts: {...} }；v9.2b 热切换 { new: {...}, old: {...} }
+const C = record.contracts || record.new;
+if (!C) {
+  console.error("✗ 部署记录里既没有 contracts 也没有 new 字段，无法生成验证载荷");
+  process.exit(1);
+}
+console.log(
+  record.new ? "使用热切换记录（record.new）：验证载荷将按当前 artifacts 的 ABI 重新生成" : "使用全量部署记录（record.contracts）"
+);
 const BLACK_HOLE = "0x000000000000000000000000000000000000dEaD";
 
 // ---------- 2. 读最新 build-info（standard-json-input 与 solc 版本） ----------

@@ -1,10 +1,6 @@
 <template>
   <div class="swap-page">
     <WalletHeader />
-    <!-- v9.2 迁移期入口：仅在已接线 ZYTSwap 地址时展示（避免未迁移时误导） -->
-    <div v-if="swapWired" class="migrate-entry" @click="$router.push('/migrate')">
-      {{ $t("swap.migrateEntry") }}
-    </div>
     <SwapPanel :slippage="poolStats.slippage" :reduction-pct="reductionPct" :refresh="refresh" />
     <div class="hint">{{ $t("swap.depositRange", { min: "100", max: "500" }) }}</div>
   </div>
@@ -15,12 +11,9 @@ import { computed, onMounted } from "vue";
 import WalletHeader from "../components/WalletHeader.vue";
 import SwapPanel from "../components/SwapPanel.vue";
 import { usePoolData } from "../composables/usePoolData";
-import { currentChain } from "../config";
 
 const { poolStats, refresh } = usePoolData();
 
-/** v9.2 迁移兑换入口：仅当已接线 ZYTSwap 地址时展示 */
-const swapWired = computed(() => !!currentChain().contracts.swap);
 
 /**
  * v9.2b：与合约定档同口径的「减少量占固定基准 2.1 万 U 的百分比」。

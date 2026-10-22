@@ -5,6 +5,20 @@ const readline = require("node:readline");
 const fs = require("node:fs");
 const path = require("node:path");
 
+// ============================================================================
+// ⚠ 路线守卫（2026-10-21 起）
+// 本脚本属【旧路线】：从零部署全套合约 + 铸造 + 新建底池 + Treasury 划转。
+// v9.2b 主线上线已改为「沿用旧币旧池的逻辑热切换」，请勿用本脚本。
+//   主网上线：node scripts/deploy-hotswap.mjs（先不带 --switch，核对后 --switch-only）
+//   本地/测试网从零重建整套系统时，加 --legacy 运行本脚本。
+// ============================================================================
+if (!process.argv.includes("--legacy")) {
+  console.error("\n⚠ deploy.js 是【旧路线】脚本（全量部署 + 铸造 + 建新池 + Treasury），v9.2b 热切换不使用它。");
+  console.error("  主网上线请执行：node scripts/deploy-hotswap.mjs");
+  console.error("  若确需从零重建整套系统（本地/测试网），请加 --legacy 重跑。\n");
+  process.exit(1);
+}
+
 /**
  * @notice 众赢币 ZYT 部署脚本（v9，2026-09-24）
  *
