@@ -240,8 +240,9 @@ const [pz, pu, price, stage, slip, gate, lpBurned, divPool, locked, pmInCreator]
   creator.poolManager(),
 ]);
 checkNum("池 USDT = 初始底池", pu, rec.seed?.usdt || "21000", true);
-// v9.2：底池 ZYT 仍为 21 亿（全量 33 亿中的组池部分，余额 12 亿转 Treasury）
-checkNum("池 ZYT = 初始底池", pz, rec.seed?.zytPool || "2100000000", true);
+// v9.2b 热切换：不再铸造，池 ZYT 沿用旧池实测值；仅旧版「全量部署」记录（rec.seed.zytPool）才做断言
+if (rec.seed?.zytPool) checkNum("池 ZYT = 初始底池", pz, rec.seed.zytPool, true);
+else info("池 ZYT（沿用旧池，不做断言）", formatEther(pz));
 info("价格", `${formatEther(price)} U`);
 info("阶段", `${stage}（1=只卖 / 2=买额 1:1 / 3=自由）`);
 info("滑点", `${slip} bps`);
@@ -250,7 +251,7 @@ check("LP 已锁仓 > 0", locked > 0n, true);
 check("Creator.poolManager = Pool", pmInCreator, C.ZYTPoolManager);
 info("累计销毁 LP", formatEther(lpBurned));
 info("分红池 ZYT", formatEther(divPool));
-check("总供应 ≤ 33 亿", supply <= 33n * 10n ** 26n, true);
+check("总供应 ≤ 21 亿", supply <= 21n * 10n ** 26n, true);
 
 console.log("\n=== 4. 参数核对（运营口径）===");
 const [maxSupply, minDep, maxDep, s1, s2, powerRate, dynMul, buyRate, poolRate, staticMul, deflRate, deflFloor, xferSlip, compRate, accCap, dStep] =
