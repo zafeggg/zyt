@@ -273,7 +273,7 @@ const [maxSupply, minDep, maxDep, s1, s2, powerRate, dynMul, buyRate, poolRate, 
     cfg.accountDepositCap(),
     cfg.depositStep(),
   ]);
-checkNum("zytMaxSupply（33 亿）", maxSupply, "3300000000");
+checkNum("zytMaxSupply（21 亿）", maxSupply, "2100000000");
 checkNum("accountDepositCap（单钱包累计入金上限）", accCap, "500");
 checkNum("depositStep（入金 100U 倍数步长）", dStep, "100");
 
