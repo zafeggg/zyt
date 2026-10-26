@@ -280,11 +280,17 @@ async function main() {
     ["function setWhiteList(address,bool)", "function isWhiteList(address) view returns (bool)"],
     signer
   );
-  const extra = (env.WHITELIST_ADDRS || "")
+  // 2026-10-26 定稿：三个运营多签固定加入白名单（已在白名单的自动跳过，不重复发交易）
+  const DEFAULT_WL = [
+    ["多签A(储备)", "0xa67E65FA6daa80eFFEE911E042C0f5b0C8718C33"],
+    ["market", "0x1bc03Fe18F9BabBc32f0B4046E13e387E9D16786"],
+    ["technical", "0x860D4704d6eee98Aa55A971Caf8BAA4134E8eec3"],
+  ];
+  const extraAddrs = (env.WHITELIST_ADDRS || "")
     .split(",")
     .map((s) => s.trim())
-    .filter(Boolean)
-    .map((a, i) => [`额外地址${i + 1}`, a]);
+    .filter(Boolean);
+  const extra = [...DEFAULT_WL, ...extraAddrs.map((a, i) => [`额外地址${i + 1}`, a])];
   const wlList = [
     ["新池管", pool.addr],
     ["blackHole", blackHoleAddr],

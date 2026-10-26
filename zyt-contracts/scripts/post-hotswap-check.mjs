@@ -170,6 +170,13 @@ async function main() {
     }
     ok(`${n} 在白名单`, await tokenWL.isWhiteList(a), a);
   }
+  // 2026-10-26 定稿的三个运营多签（持仓不被强卖义务销毁的前提）
+  const DEFAULT_WL = [
+    ["多签A(储备)", "0xa67E65FA6daa80eFFEE911E042C0f5b0C8718C33"],
+    ["market", "0x1bc03Fe18F9BabBc32f0B4046E13e387E9D16786"],
+    ["technical", "0x860D4704d6eee98Aa55A971Caf8BAA4134E8eec3"],
+  ];
+  for (const [n, a] of DEFAULT_WL) ok(`${n} 在白名单`, await tokenWL.isWhiteList(a), a);
   if (env.WHITELIST_ADDRS) {
     for (const a of env.WHITELIST_ADDRS.split(",").map((s) => s.trim()).filter(Boolean)) {
       ok(`额外地址在白名单`, await tokenWL.isWhiteList(a), a);
