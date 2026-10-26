@@ -169,6 +169,45 @@ async function main() {
     }
   };
 
+  // 白名单（5.5 步）：只对当前还不是白名单的地址估价，已设定则跳过
+  const tokenWL = new Contract(
+    OLD.token,
+    ["function isWhiteList(address) view returns (bool)", "function setWhiteList(address,bool)"],
+    provider
+  );
+  const WL = [
+    ["新池管", predicted.ZYTPoolManager],
+    ["blackHole", env.BLACK_HOLE || "0x000000000000000000000000000000000000dEaD"],
+    ["keeper", KEEPER],
+    ["owner", from],
+    ...(env.WHITELIST_ADDRS || "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .map((a, i) => [`额外${i + 1}`, a]),
+  ];
+  for (const [n, a] of WL) {
+    if (!a) continue;
+    let already = false;
+    try {
+      already = await tokenWL.isWhiteList(a);
+    } catch {
+      /* 读不到就当未设定，继续估价 */
+    }
+    if (already) {
+      console.log(`= ${`setWhiteList(${n})`.padEnd(34)} 已在白名单，跳过`);
+      rows.push({ step: `setWhiteList(${n})`, gas: 0n, skipped: true });
+      continue;
+    }
+    try {
+      const tx = await tokenWL.setWhiteList.populateTransaction(a, true);
+      const gas = await provider.estimateGas({ ...tx, from });
+      record(`setWhiteList(${n})`, gas);
+    } catch (e) {
+      record(`setWhiteList(${n})`, 0n, e.shortMessage || String(e.message).slice(0, 50));
+    }
+  }
+
   await est("referral.setMining(新)", REF, "setMining", predicted.ZYTMining);
   await est("creator.setPoolManager(新)", CRE, "setPoolManager", predicted.ZYTPoolManager);
   await est("token.setPool(新)", TOK, "setPool", predicted.ZYTPoolManager);
@@ -187,8 +226,10 @@ async function main() {
   console.log(`账户余额: ${formatEther(bal)} BNB ${bal >= cost ? "✓ 足够" : "⚠ 不足，需先充值"}`);
   console.log(`注意：setUserData（75 户 ≈ 2 批）+ seedDividend 未计入，建议额外预留 30% 余量`);
 
-  const failed = rows.filter((r) => !r.gas);
-  console.log(`\n结果：${rows.length - failed.length} 笔可执行 / ${failed.length} 笔会失败`);
+  const failed = rows.filter((r) => !r.gas && !r.skipped);
+  const skipped = rows.filter((r) => r.skipped).length;
+  const execCount = rows.filter((r) => r.gas > 0n).length;
+  console.log(`\n结果：${execCount} 笔将执行 / ${skipped} 笔已在白名单跳过 / ${failed.length} 笔会失败`);
   if (failed.length) process.exit(1);
 }
 
