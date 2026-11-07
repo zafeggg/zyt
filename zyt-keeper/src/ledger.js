@@ -499,12 +499,19 @@ export class Ledger {
         }
       }
     }
-    const status = diffUsers > 0 ? "diff" : "ok";
+    // 2026-11-07：total=0 说明链上用户列表没读到（合约地址错 / RPC 异常 / 传参缺 zyt），
+    // 此时 diffUsers 必然为 0，原实现会写一条 status='ok' 的假记录，对账从此静默空转。
+    // 改为独立的 error 状态 + 告警，宁可吵，不可假装通过。
+    const empty = total === 0;
+    const status = empty ? "error" : diffUsers > 0 ? "diff" : "ok";
     await db.run(
       "INSERT INTO reconcile_results (checked_at, total_users, diff_users, max_diff_pct, status, detail) VALUES (?,?,?,?,?,?)",
       [Math.floor(Date.now() / 1000), total, diffUsers, maxDiffPct, status, diffs.slice(0, 20).join(",")]
     );
-    if (diffUsers > 0) {
+    if (empty) {
+      logRun("reconcile", "error", "链上用户数为 0，对账未执行（检查 ZYT_ADDR 与 RPC，或调用方是否漏传 zyt）");
+      await notify("[ZYT Keeper] 对账异常: 链上用户数为 0，对账未执行");
+    } else if (diffUsers > 0) {
       logRun("reconcile", "error", `真对账发现 ${diffUsers}/${total} 用户差异, max=${maxDiffPct.toFixed(2)}%`);
       await notify(`[ZYT Keeper] 对账异常: ${diffUsers}/${total} 用户链上链下不一致, max=${maxDiffPct.toFixed(2)}% (${diffs.slice(0, 5).join(", ")})`);
     } else {
