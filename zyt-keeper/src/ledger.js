@@ -27,10 +27,98 @@ export class Ledger {
     this.dynamicQuotaMul = BigInt(CONFIG.params?.dynamicQuotaMul || 5);
     /** v16：全网算力复利基准日 launchDay（=全网首次入金日；链上读取缓存，null=未加载） */
     this.launchDay = null;
+    // ===== 2026-11-07 读写锁（事故修复）=====
+    // 事故背景：rebuild 先 DELETE FROM users 再逐条重放 4000+ 条事件，全程无事务、无互斥。
+    //   定时器每 30s 触发一次，一次重建要几十秒，导致 users 表长期处于「删空后逐条重填」的中间态。
+    //   每日快照恰好在这个窗口里读 users 表算 Σ power_base，读到多少行全看运气：
+    //   day 20761/20762/20763 的分母分别只有真实值的 91%/67%/52%，day 20764 才回到 99%。
+    //   分红按 Σ算力 加权，分母偏小意味着当天结算者超额领取（20763 多领约 90%），烧的是分红池存量。
+    // 解法：读方（totalPower / powerOf）持读锁，重建持写锁，互斥进行；重建再加脏检查，事件无变化直接跳过。
+    this._readers = 0;
+    this._writing = false;
+    this._rebuildPromise = null;
+    /** events 表指纹（行数:最大id），用于跳过无变化的重建 */
+    this._eventSig = null;
   }
 
-  /** 增量重放事件，重建用户账本 */
+  /**
+   * 读锁：等待进行中的重建结束再读。
+   * @param {number} maxWaitMs 最长等待；超时放行并告警（宁可读到旧值，不可让 API/快照挂死）
+   */
+  async _enterRead(maxWaitMs = 5000) {
+    const t0 = Date.now();
+    while (this._writing) {
+      if (Date.now() - t0 > maxWaitMs) {
+        logRun("ledger", "warn", `read starved by rebuild >${maxWaitMs}ms, proceed anyway`);
+        break;
+      }
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    this._readers++;
+  }
+
+  _exitRead() {
+    if (this._readers > 0) this._readers--;
+  }
+
+  /** 写锁：先置位阻止新读者进入，再等存量读者全部退出 */
+  async _enterWrite() {
+    const t0 = Date.now();
+    this._writing = true;
+    while (this._readers > 0) {
+      if (Date.now() - t0 > 120_000) {
+        this._writing = false;
+        throw new Error("ledger: wait readers timeout");
+      }
+      await new Promise((r) => setTimeout(r, 50));
+    }
+  }
+
+  _exitWrite() {
+    this._writing = false;
+  }
+
+  /**
+   * 重建账本（单飞 + 脏检查 + 写锁）。
+   * @returns {Promise<number>} 1=本次执行了重建；0=事件无变化已跳过
+   */
   async rebuild() {
+    // 单飞：并发调用复用同一 promise，避免多个重建互相 DELETE
+    if (this._rebuildPromise) return this._rebuildPromise;
+    this._rebuildPromise = this._rebuildGuarded().finally(() => {
+      this._rebuildPromise = null;
+    });
+    return this._rebuildPromise;
+  }
+
+  /** 脏检查 → 取写锁 → 全量重放 */
+  async _rebuildGuarded() {
+    const db = await getDb();
+    // 事件指纹：行数 + 最大自增 id。events 只增不删，二者任一变化才需要重放。
+    // 无变化时直接跳过，把「重建窗口」从常驻降到只在真有新事件的那一次。
+    let sig = `${this._eventSig || ""}`;
+    try {
+      const r = await db.get(
+        "SELECT COUNT(*) c, COALESCE(MAX(id),0) m FROM events WHERE chain_id=?",
+        [CONFIG.chainId]
+      );
+      sig = `${r?.c ?? 0}:${r?.m ?? 0}`;
+      if (this._eventSig && sig === this._eventSig) return 0;
+    } catch {
+      /* 指纹查询失败则照常重建 */
+    }
+    await this._enterWrite();
+    try {
+      await this._rebuildInternal();
+      this._eventSig = sig;
+      return 1;
+    } finally {
+      this._exitWrite();
+    }
+  }
+
+  /** 增量重放事件，重建用户账本（调用方须已持有写锁） */
+  async _rebuildInternal() {
     const db = await getDb();
     await db.exec("DELETE FROM users;");
     // Sold 同 tx 去重集合（每次 rebuild 重置；Pool.Sold 与 Mining.Sold 同 tx 双 emit 只记一次）
@@ -259,17 +347,23 @@ export class Ledger {
 
   /** 算力复利：base × 1.01^(day-launchDay)，全网统一基准（v16 对齐，2026-09-28） */
   async powerOf(addr, nowDay = Math.floor(Date.now() / 86400000)) {
-    const db = await getDb();
-    const row = await db.get("SELECT power_base, power_day, exit_day FROM users WHERE address=?", [addr]);
-    if (!row || BigInt(row.power_base) === 0n) return 0n;
-    // 与合约 _powerOf 同口径：出局后算力停发（历史算力仍可回算，分红按日结算依赖）
-    const exitDay = Number(row.exit_day || 0);
-    if (exitDay > 0 && nowDay >= exitDay) return 0n;
-    // 与合约 _powerOf 同口径（ZYTMining.sol:290-298）：全网统一 launchDay 复利基准，
-    // 后入金者入金即按 1.01^(day-launchDay) 补偿；launchDay 未启动时全网算力为 0
-    const launchDay = await this._getLaunchDay();
-    if (!launchDay || nowDay < launchDay) return 0n;
-    return this._compound(BigInt(row.power_base), nowDay - launchDay);
+    // 2026-11-07：与 totalPower 同样持读锁，避免 /api/user、/api/power、/api/dividend 读到重建中间态
+    await this._enterRead(5000);
+    try {
+      const db = await getDb();
+      const row = await db.get("SELECT power_base, power_day, exit_day FROM users WHERE address=?", [addr]);
+      if (!row || BigInt(row.power_base) === 0n) return 0n;
+      // 与合约 _powerOf 同口径：出局后算力停发（历史算力仍可回算，分红按日结算依赖）
+      const exitDay = Number(row.exit_day || 0);
+      if (exitDay > 0 && nowDay >= exitDay) return 0n;
+      // 与合约 _powerOf 同口径（ZYTMining.sol:290-298）：全网统一 launchDay 复利基准，
+      // 后入金者入金即按 1.01^(day-launchDay) 补偿；launchDay 未启动时全网算力为 0
+      const launchDay = await this._getLaunchDay();
+      if (!launchDay || nowDay < launchDay) return 0n;
+      return this._compound(BigInt(row.power_base), nowDay - launchDay);
+    } finally {
+      this._exitRead();
+    }
   }
 
   /**
@@ -280,26 +374,32 @@ export class Ledger {
    *   2026-09-28 随合约 v16 升级为全网 launchDay 统一复利基准）。
    */
   async totalPower(day) {
-    const db = await getDb();
-    const rows = await db.all("SELECT power_base, power_day, exit_day FROM users");
-    const at = day === undefined || day === null ? Math.floor(Date.now() / 86400000) : Number(day);
-    // v16 对齐：全网统一 launchDay 复利基准（合约 ZYTMining.sol:294-297）；启动日之前全网算力为 0
-    const launchDay = await this._getLaunchDay();
-    if (!launchDay || at < launchDay) return 0n;
-    let sum = 0n;
-    for (const r of rows) {
-      const base = BigInt(r.power_base || 0);
-      if (base === 0n) continue;
-      const pd = Number(r.power_day || 0);
-      // 该用户当日尚未首入 → 不计入当日分红分母（与合约 _settleDividend 的 from >= powerDay 一致；
-      // v16.1 起 power_day=入金次日，天然保证「起算日快照时用户已在账本」）
-      if (at < pd) continue;
-      // 与合约 _powerOf(user, day) 同口径：出局当日起算力归零（历史分红按日回算不受影响）
-      const exitDay = Number(r.exit_day || 0);
-      if (exitDay > 0 && at >= exitDay) continue;
-      sum += this._compound(base, at - launchDay);
+    // 2026-11-07：持读锁，等重建写完再读，避免读到 DELETE 后逐条重填的中间态（分红分母失真根因）
+    await this._enterRead(120_000);
+    try {
+      const db = await getDb();
+      const rows = await db.all("SELECT power_base, power_day, exit_day FROM users");
+      const at = day === undefined || day === null ? Math.floor(Date.now() / 86400000) : Number(day);
+      // v16 对齐：全网统一 launchDay 复利基准（合约 ZYTMining.sol:294-297）；启动日之前全网算力为 0
+      const launchDay = await this._getLaunchDay();
+      if (!launchDay || at < launchDay) return 0n;
+      let sum = 0n;
+      for (const r of rows) {
+        const base = BigInt(r.power_base || 0);
+        if (base === 0n) continue;
+        const pd = Number(r.power_day || 0);
+        // 该用户当日尚未首入 → 不计入当日分红分母（与合约 _settleDividend 的 from >= powerDay 一致；
+        // v16.1 起 power_day=入金次日，天然保证「起算日快照时用户已在账本」）
+        if (at < pd) continue;
+        // 与合约 _powerOf(user, day) 同口径：出局当日起算力归零（历史分红按日回算不受影响）
+        const exitDay = Number(r.exit_day || 0);
+        if (exitDay > 0 && at >= exitDay) continue;
+        sum += this._compound(base, at - launchDay);
+      }
+      return sum;
+    } finally {
+      this._exitRead();
     }
-    return sum;
   }
 
   /** 每日对账（#3 真对账）：链上真池状态 → pool_state + 链上 userList 逐用户比对链下账本 */
