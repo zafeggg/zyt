@@ -120,7 +120,10 @@ export class Ledger {
   /** 增量重放事件，重建用户账本（调用方须已持有写锁） */
   async _rebuildInternal() {
     const db = await getDb();
-    await db.exec("DELETE FROM users;");
+    // 2026-11-08：改为写影子表 users_next，重放完成后原子改名切换。
+    // 原实现 DELETE FROM users 后逐条重放，几千次写之间 users 表处于半空状态，
+    // 快照/API 一旦读到中间态，分红分母就会失真（2026-11-06 分母只剩真实值的 52%）。
+    await db.prepareUsersNext();
     // Sold 同 tx 去重集合（每次 rebuild 重置；Pool.Sold 与 Mining.Sold 同 tx 双 emit 只记一次）
     const seenSoldTx = new Set();
     // 按 chain_id 过滤重放——防本地联调（31337）与 testnet 事件混入同一张 events 表
@@ -131,7 +134,7 @@ export class Ledger {
     //       复利天数归零导致算力偏低（实测账本 1500 vs 链上 1530.15）。改按事件所属区块时间戳换算。
     await this._ensureBlockTimes(rows);
     const upsertSql = `
-      INSERT INTO users (address, deposit_total, withdraw_total, converted_total, received_value, exit_day, dynamic_quota, dynamic_withdrawn, power_base, power_day, is_exited, updated_at)
+      INSERT INTO users_next (address, deposit_total, withdraw_total, converted_total, received_value, exit_day, dynamic_quota, dynamic_withdrawn, power_base, power_day, is_exited, updated_at)
       VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
       ON CONFLICT(address) DO UPDATE SET
         deposit_total=excluded.deposit_total,
@@ -213,8 +216,10 @@ export class Ledger {
       // Bought / Claimed / DividendSettled / DailyReleased：不影响账本字段
       // （买入是投入非提取；分红从 pool 分红池划转，已由 /records 事件流呈现）
     }
-    const n = await db.get("SELECT count(*) c FROM users");
+    const n = await db.get("SELECT count(*) c FROM users_next");
     const count = n ? Number(n.c) : 0;
+    // 重放完成，原子切换（MySQL 单条 RENAME TABLE 多表；SQLite 两次 ALTER 同一 exec）
+    await db.swapUsers();
     logRun("ledger", "ok", `rebuild users=${count}`);
   }
 
@@ -279,7 +284,9 @@ export class Ledger {
     if (!addr) return;
     addr = String(addr).toLowerCase();
     const db = await getDb();
-    const row = await db.get("SELECT * FROM users WHERE address=?", [addr]);
+    // 2026-11-08：读影子表。重建期间 users_next 才是本次重放的累加目标，
+    // 读 users 会拿到上一版数据，同一用户的多条事件无法正确叠加。
+    const row = await db.get("SELECT * FROM users_next WHERE address=?", [addr]);
     const u = {
       deposit_total: row ? BigInt(row.deposit_total) : 0n,
       withdraw_total: row ? BigInt(row.withdraw_total) : 0n,

@@ -40,6 +40,36 @@ export function _resetDb() {
 
 // ===================== 内存 SQLite 后端 =====================
 
+/**
+ * users 表列定义（两套方言各一份）。
+ * 2026-11-08：抽成常量，供 users 与影子表 users_next 共用，避免两处 DDL 漂移。
+ */
+const MEM_USERS_COLS = `address TEXT PRIMARY KEY,
+    deposit_total TEXT DEFAULT '0',
+    withdraw_total TEXT DEFAULT '0',
+    dynamic_quota TEXT DEFAULT '0',
+    dynamic_withdrawn TEXT DEFAULT '0',
+    converted_total TEXT DEFAULT '0',
+    received_value TEXT DEFAULT '0',
+    exit_day INTEGER DEFAULT 0,
+    power_base TEXT DEFAULT '0',
+    power_day INTEGER DEFAULT 0,
+    is_exited INTEGER DEFAULT 0,
+    updated_at INTEGER`;
+
+const MYSQL_USERS_COLS = `address VARCHAR(42) PRIMARY KEY,
+      deposit_total VARCHAR(80) DEFAULT '0',
+      withdraw_total VARCHAR(80) DEFAULT '0',
+      dynamic_quota VARCHAR(80) DEFAULT '0',
+      dynamic_withdrawn VARCHAR(80) DEFAULT '0',
+      converted_total VARCHAR(80) DEFAULT '0',
+      received_value VARCHAR(80) DEFAULT '0',
+      exit_day INT DEFAULT 0,
+      power_base VARCHAR(80) DEFAULT '0',
+      power_day INT DEFAULT 0,
+      is_exited TINYINT(1) DEFAULT 0,
+      updated_at BIGINT`;
+
 function createMemoryDb() {
   const d = new DatabaseSync(":memory:");
   d.exec("PRAGMA journal_mode=WAL;");
@@ -53,6 +83,19 @@ function createMemoryDb() {
     },
     get: async (sql, params = []) => d.prepare(sql).get(...params) ?? null,
     all: async (sql, params = []) => d.prepare(sql).all(...params),
+    /**
+     * 建空的影子表 users_next（2026-11-08）。
+     * 重建流程：prepareUsersNext → 逐条写入 users_next → swapUsers 原子改名。
+     */
+    prepareUsersNext: async () => {
+      d.exec("DROP TABLE IF EXISTS users_next;");
+      d.exec(`CREATE TABLE users_next (${MEM_USERS_COLS});`);
+    },
+    /** 原子切换：SQLite 无多表 RENAME，两次改名放进同一次 exec，中间不插入其他语句 */
+    swapUsers: async () => {
+      d.exec("DROP TABLE IF EXISTS users_old;");
+      d.exec("ALTER TABLE users RENAME TO users_old; ALTER TABLE users_next RENAME TO users;");
+    },
   };
 }
 
@@ -79,18 +122,7 @@ function migrateMemory(d) {
     updated_at INTEGER
   );
   CREATE TABLE IF NOT EXISTS users (
-    address TEXT PRIMARY KEY,
-    deposit_total TEXT DEFAULT '0',
-    withdraw_total TEXT DEFAULT '0',
-    dynamic_quota TEXT DEFAULT '0',
-    dynamic_withdrawn TEXT DEFAULT '0',
-    converted_total TEXT DEFAULT '0',
-    received_value TEXT DEFAULT '0',
-    exit_day INTEGER DEFAULT 0,
-    power_base TEXT DEFAULT '0',
-    power_day INTEGER DEFAULT 0,
-    is_exited INTEGER DEFAULT 0,
-    updated_at INTEGER
+    ${MEM_USERS_COLS}
   );
   CREATE TABLE IF NOT EXISTS snapshots (
     day INTEGER PRIMARY KEY,
@@ -197,18 +229,7 @@ async function createMysqlDb(url) {
       updated_at BIGINT
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
     `CREATE TABLE IF NOT EXISTS users (
-      address VARCHAR(42) PRIMARY KEY,
-      deposit_total VARCHAR(80) DEFAULT '0',
-      withdraw_total VARCHAR(80) DEFAULT '0',
-      dynamic_quota VARCHAR(80) DEFAULT '0',
-      dynamic_withdrawn VARCHAR(80) DEFAULT '0',
-      converted_total VARCHAR(80) DEFAULT '0',
-      received_value VARCHAR(80) DEFAULT '0',
-      exit_day INT DEFAULT 0,
-      power_base VARCHAR(80) DEFAULT '0',
-      power_day INT DEFAULT 0,
-      is_exited TINYINT(1) DEFAULT 0,
-      updated_at BIGINT
+      ${MYSQL_USERS_COLS}
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
     `CREATE TABLE IF NOT EXISTS snapshots (
       day INT PRIMARY KEY,
@@ -311,16 +332,29 @@ async function createMysqlDb(url) {
       await pool.query(sql);
     },
     run: async (sql, params = []) => {
-      const [r] = await pool.execute(translate(sql), params);
+      // 2026-11-08：改用 query（文本协议）替代 execute（二进制预处理）。
+      // 原因：影子表重建用 RENAME TABLE 切换 users，MySQL 会让已缓存的预处理语句失效，
+      // 后续 execute 报 ER_NEED_REPREPARE。表数据量很小（百级用户 / 千级事件），文本协议足够。
+      const [r] = await pool.query(translate(sql), params);
       return { affectedRows: r.affectedRows, insertId: r.insertId };
     },
     get: async (sql, params = []) => {
-      const [rows] = await pool.execute(translate(sql), params);
+      const [rows] = await pool.query(translate(sql), params);
       return rows[0] ?? null;
     },
     all: async (sql, params = []) => {
-      const [rows] = await pool.execute(translate(sql), params);
+      const [rows] = await pool.query(translate(sql), params);
       return rows;
+    },
+    /** 建空的影子表 users_next（2026-11-08），与 users 同结构 */
+    prepareUsersNext: async () => {
+      await pool.query("DROP TABLE IF EXISTS users_next");
+      await pool.query(`CREATE TABLE users_next (${MYSQL_USERS_COLS}) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+    },
+    /** 原子切换：MySQL 的 RENAME TABLE 多表操作在服务端一次性完成，读方无中间态 */
+    swapUsers: async () => {
+      await pool.query("DROP TABLE IF EXISTS users_old");
+      await pool.query("RENAME TABLE users TO users_old, users_next TO users");
     },
   };
 }
