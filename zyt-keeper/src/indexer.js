@@ -5,6 +5,39 @@ import { SUBSCRIBED } from "./abis.js";
 import { logRun } from "./alert.js";
 
 /**
+ * 区分 getLogs 失败原因（2026-11-08）。
+ * 背景：原实现把所有异常一律当「历史剪枝」处理，直接跳过 900 块。实测 blockrazor 返回
+ *   429 too many requests 时也走了跳块分支，一次丢掉 8 条 Sold / 2 条 Claimed /
+ *   2 条 DividendSettled（132146847-132148842 区间）。Sold 决定静态 2 倍出局进度，
+ *   丢失会让账本误判用户未出局，算力继续复利，摊薄全网分红分母。
+ * 返回：
+ *   "retry"  限流/超时/网络抖动，退避重试同一区间，绝不跳块
+ *   "pruned" 节点真的没有历史数据（-32701），才允许跳块并记录精确区间
+ *   "fatal"  其他错误，抛出交由上层（轮询下一轮会重来）
+ */
+export function classifyRpcError(e) {
+  const info = e?.info?.error || {};
+  const code = info.code ?? e?.code;
+  const msg = String(info.message || e?.shortMessage || e?.message || "").toLowerCase();
+  // 剪枝优先判断：部分节点把剪枝也包成 -32005，靠消息里的 pruned 兜底
+  if (code === -32701 || msg.includes("pruned") || msg.includes("history has been")) return "pruned";
+  if (code === 429 || code === -32005) return "retry";
+  if (msg.includes("too many") || msg.includes("rate limit") || msg.includes("limit exceeded")) return "retry";
+  if (
+    msg.includes("timeout") ||
+    msg.includes("timed out") ||
+    msg.includes("econnreset") ||
+    msg.includes("socket") ||
+    msg.includes("fetch failed") ||
+    msg.includes("network error") ||
+    e?.code === "TIMEOUT"
+  ) {
+    return "retry";
+  }
+  return "fatal";
+}
+
+/**
  * 链上事件索引器：轮询 getLogs（无需 WebSocket 节点），解析事件入库。
  * 事件落库后由 ledger 模块汇总为用户/池状态。
  */
@@ -41,24 +74,43 @@ export class Indexer {
     const addrList = [...addrMap.keys()];
     if (addrList.length === 0) return 0;
 
+    // 2026-11-08：限流重试计数，成功一次即清零
+    const MAX_RETRY = 3;
+    let retry = 0;
     while (from <= latest) {
       const to = Math.min(from + range - 1, latest);
       let logs;
       try {
         logs = await this.provider.getLogs({ address: addrList, fromBlock: from, toBlock: to });
+        retry = 0; // 成功即复位
       } catch (e) {
-        // 2026-09-25：公共 RPC（publicnode / 官方 data-seed）对老区块 getLogs 剪枝（-32701
-        // "History has been pruned"）。原实现在此整轮抛错 → 游标停滞、后续所有事件持续漏抓。
-        // 自愈策略：低于安全窗口的历史区间放弃（记录 gap），直接跳到最近 SAFE_WINDOW 块继续。
-        const SAFE_WINDOW = 900; // 保留窗口（实测公共节点近 1 万块可用，900 更保守）
-        const jumpTo = latest - SAFE_WINDOW;
-        if (to < jumpTo) {
-          console.warn(
-            `[indexer] pruned history ${from}-${to}（公共 RPC 剪枝）；跳过至 ${jumpTo}，该区间事件缺失`
-          );
-          logRun("indexer", "gap", `pruned ${from}-${to} → resume ${jumpTo}`);
-          from = jumpTo;
-          continue;
+        const kind = classifyRpcError(e);
+        // 429 / 超时 / 网络抖动：退避后重试同一区间。跳块会永久丢事件，这里宁可慢也不能漏。
+        if (kind === "retry") {
+          retry++;
+          if (retry <= MAX_RETRY) {
+            const wait = 2000 * retry;
+            console.warn(
+              `[indexer] ${from}-${to} 限流或超时（第 ${retry} 次），${wait}ms 后重试同一区间`
+            );
+            await new Promise((r) => setTimeout(r, wait));
+            continue;
+          }
+          console.warn(`[indexer] ${from}-${to} 重试 ${MAX_RETRY} 次仍失败，抛错等待下一轮轮询`);
+          throw e;
+        }
+        // 真正的历史剪枝（-32701 / pruned）才允许跳块
+        if (kind === "pruned") {
+          const SAFE_WINDOW = 900; // 保留窗口（实测公共节点近 1 万块可用，900 更保守）
+          const jumpTo = latest - SAFE_WINDOW;
+          if (to < jumpTo) {
+            console.warn(
+              `[indexer] pruned history ${from}-${to}（节点已剪枝）；跳过至 ${jumpTo}，该区间事件缺失`
+            );
+            logRun("indexer", "gap", `pruned ${from}-${to} → resume ${jumpTo}`);
+            from = jumpTo;
+            continue;
+          }
         }
         throw e;
       }
@@ -122,6 +174,18 @@ export class Indexer {
           }
         }
       }
+      // 2026-11-08：每批成功即落独立游标表。原实现靠 events 的 MAX(block) 恢复，
+      // 而「没有事件的块」不会推进 events，游标因此长期停在旧块，每次重启就从很久以前重扫，
+      // 撞上节点剪枝窗口后直接跳块丢数据（今天两次 pruned 就是这么来的）。
+      this.lastBlock = to;
+      try {
+        await db.run(
+          "INSERT INTO indexer_state (chain_id, last_block, updated_at) VALUES (?,?,?) ON CONFLICT(chain_id) DO UPDATE SET last_block=excluded.last_block, updated_at=excluded.updated_at",
+          [CONFIG.chainId, to, Math.floor(Date.now() / 1000)]
+        );
+      } catch (e) {
+        console.warn("[indexer] 写游标失败:", String(e.message).slice(0, 80));
+      }
       from = to + 1;
       // v16：批间限速（公共 RPC 对 getLogs 有频率限制，连续请求会 429）
       if (CONFIG.indexer.batchDelayMs > 0 && from <= latest) {
@@ -135,16 +199,24 @@ export class Indexer {
   async start() {
     if (this.running) return;
     this.running = true;
-    // 2026-09-25：启动游标优先取 DB 已索引位置（MAX(block)+1）。
-    // 背景：公共 RPC 剪枝老区块，每次重启从 START_BLOCK 重扫都会大量报错并制造无效 gap 日志；
-    // 已索引过的区间无需重扫（事件表 UNIQUE 幂等，但省去无用 RPC 调用与噪音）。
+    // 2026-11-08：游标优先取独立表 indexer_state，回退 events 的 MAX(block)。
+    // 原因：events 只在有事件时推进，长时间无事件的行情下列的 MAX(block) 会停在旧块，
+    //       重启后从旧块重扫，撞上节点剪枝窗口就跳块丢数据。
     try {
       const db = await getDb();
-      const row = await db.get("SELECT MAX(block) AS m FROM events WHERE chain_id=?", [CONFIG.chainId]);
-      const maxBlock = row && row.m ? Number(row.m) : 0;
-      if (maxBlock > this.lastBlock) {
-        logRun("indexer", "ok", `resume cursor from DB MAX(block)=${maxBlock}（跳过 ${this.lastBlock}-${maxBlock} 重扫）`);
-        this.lastBlock = maxBlock;
+      const st = await db.get("SELECT last_block FROM indexer_state WHERE chain_id=?", [CONFIG.chainId]);
+      const saved = st && st.last_block ? Number(st.last_block) : 0;
+      if (saved > this.lastBlock) {
+        logRun("indexer", "ok", `resume cursor from indexer_state last_block=${saved}`);
+        this.lastBlock = saved;
+      } else {
+        // 老库首次升级：indexer_state 还没有记录，用 events 的 MAX(block) 兜底
+        const row = await db.get("SELECT MAX(block) AS m FROM events WHERE chain_id=?", [CONFIG.chainId]);
+        const maxBlock = row && row.m ? Number(row.m) : 0;
+        if (maxBlock > this.lastBlock) {
+          logRun("indexer", "ok", `resume cursor from DB MAX(block)=${maxBlock}（跳过 ${this.lastBlock}-${maxBlock} 重扫）`);
+          this.lastBlock = maxBlock;
+        }
       }
     } catch {
       /* 读游标失败则退回 START_BLOCK 全量重扫 */

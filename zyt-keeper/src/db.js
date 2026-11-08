@@ -73,6 +73,11 @@ function migrateMemory(d) {
     block_time INTEGER,
     UNIQUE(chain_id, tx_hash, log_index)
   );
+  CREATE TABLE IF NOT EXISTS indexer_state (
+    chain_id INTEGER PRIMARY KEY,
+    last_block INTEGER NOT NULL,
+    updated_at INTEGER
+  );
   CREATE TABLE IF NOT EXISTS users (
     address TEXT PRIMARY KEY,
     deposit_total TEXT DEFAULT '0',
@@ -161,6 +166,13 @@ async function createMysqlDb(url) {
     database: u.pathname.replace(/^\//, ""),
     connectionLimit: 10,
     charset: "utf8mb4",
+    // 2026-11-07 抗雪崩：磁盘写满事故后补的兜底线
+    //   背景：MySQL 卡在 waiting for handler commit 时，未设超时的连接会永久挂起，
+    //   10 个连接被占满后所有查询无限排队，/stats 直接 120s 无响应。
+    connectTimeout: 8000, // 建连超时，避免 TCP 握手挂死
+    idleTimeout: 60_000, // 空闲连接回收，防长期占用
+    enableKeepAlive: true,
+    keepAliveInitialDelay: 10_000,
   });
   // 建表（MySQL DDL，幂等）
   const DDL = [
@@ -178,6 +190,11 @@ async function createMysqlDb(url) {
       created_at BIGINT,
       block_time BIGINT DEFAULT NULL,
       UNIQUE KEY uk_evt (chain_id, tx_hash, log_index)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+    `CREATE TABLE IF NOT EXISTS indexer_state (
+      chain_id INT PRIMARY KEY,
+      last_block BIGINT NOT NULL,
+      updated_at BIGINT
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
     `CREATE TABLE IF NOT EXISTS users (
       address VARCHAR(42) PRIMARY KEY,
@@ -267,6 +284,9 @@ async function createMysqlDb(url) {
     "ALTER TABLE force_sell ADD COLUMN quota VARCHAR(80) DEFAULT '0'",
     "ALTER TABLE force_sell ADD COLUMN deficit VARCHAR(80) DEFAULT '0'",
     "ALTER TABLE force_sell ADD COLUMN deadline_sec BIGINT DEFAULT 0",
+    // 2026-11-07：keeper_runs 加建表时间索引，配合 cleanRuns 的 7 天清理任务
+    //   老库 CREATE TABLE IF NOT EXISTS 不会补索引，这条 ALTER 负责补齐（已存在则忽略）
+    "ALTER TABLE keeper_runs ADD INDEX idx_runs_created (created_at)",
   ];
   for (const sql of MIGRATIONS) {
     try {
