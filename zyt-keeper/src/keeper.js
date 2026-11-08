@@ -118,6 +118,38 @@ export class Keeper {
       logRun("keeper", "skip", `day ${day} already snapshotted`);
       return;
     }
+    // 2026-11-08：本地 snapshots 表可能漏记（人工补发 / 写库失败），发送前先对一次链上权威值。
+    // 事故表现：链上 day 20765 已完成，本地表最新只到 20764，启动自检于是对着已快照的日子发交易，
+    // 被合约 revert "Deflation: once per day"，每天启动都白跑一次 gas 估算并留下噪音告警。
+    // 处理：链上已有则直接跳过，并把缺失的那几条补回本地表，让两边对齐。
+    if (!force) {
+      let chainDay = 0;
+      try {
+        chainDay = Number(await this.deflation.lastSnapshotDay());
+      } catch (e) {
+        logRun("keeper", "warn", `read lastSnapshotDay failed: ${String(e.message).slice(0, 60)}`);
+      }
+      if (chainDay >= day) {
+        if (!last || Number(last.day) < chainDay) {
+          // 补充本地记录：total_power 取链上 dailyInfo，读不到就写 0（不影响已完成的链上结算）
+          let tp = "0";
+          try {
+            const di = await this.ledger.contracts.mining.dailyInfo(chainDay);
+            tp = String(di[0]);
+          } catch {
+            /* 读失败保持 0 */
+          }
+          await db.run("INSERT OR REPLACE INTO snapshots (day, total_power, created_at) VALUES (?,?,?)", [
+            chainDay,
+            tp,
+            Math.floor(Date.now() / 1000),
+          ]);
+          logRun("keeper", "ok", `snapshots 表补齐 day=${chainDay}（链上已快照，本地缺记录）`);
+        }
+        logRun("keeper", "skip", `chain already snapshotted day=${chainDay}`);
+        return;
+      }
+    }
     // 分红分母口径：传本次将要写入的 day，使 totalPower === Σ _powerOf(user, day)
     const totalPower = await this.ledger.totalPower(day);
     const errors = [];
@@ -163,15 +195,56 @@ export class Keeper {
     // 唤醒后最多 10 分钟内自动补跑。
     this.catchUpTimer = setTimeout(() => this.runSnapshot(), 30_000);
     this.catchUpInterval = setInterval(() => this.runSnapshot(), 10 * 60_000);
+    // 2026-11-07：keeper_runs 自动清理（保留 7 天）
+    // 事故背景：该表无索引、无清理策略，线上累积 245075 行 / 21.6MB。
+    //   monitor 与 ledger 每轮都写入一条，高频小事务在磁盘写满时进一步加剧提交拥塞。
+    //   启动 60s 后跑一次，之后每 24h 一次；失败只告警，不阻断快照主流程。
+    this.pruneTimer = setTimeout(() => this.cleanupRuns(), 60_000);
+    this.pruneInterval = setInterval(() => this.cleanupRuns(), 24 * 3600_000);
     const signerState = this.signerReady
       ? `signer=${this.signerAddress}`
       : "signer=NOT_CONFIGURED (写交易将拒绝)";
     logRun("keeper", "start", `cron="${expr}" tz=${CONFIG.keeper.snapshotCronTz} ${signerState}`);
   }
 
+  /**
+   * 清理 keeper_runs 历史记录（2026-11-07 新增）
+   * - 保留最近 7 天，超过则删除
+   * - 分批 2 万条：先用 LIMIT/OFFSET 取边界 id，再按 id 区间删，
+   *   避免单事务删除几十万行造成长事务锁表与 undo 膨胀
+   * - MySQL 与内存 SQLite 双后端兼容（LIMIT 值直接内联常量，无注入风险）
+   */
+  async cleanupRuns() {
+    try {
+      const db = await getDb();
+      const cutoff = Math.floor(Date.now() / 1000) - 7 * 86400;
+      const BATCH = 20000;
+      let removed = 0;
+      for (let i = 0; i < 50; i++) {
+        const edge = await db.get(
+          `SELECT id FROM keeper_runs WHERE created_at < ? ORDER BY id LIMIT 1 OFFSET ${BATCH}`,
+          [cutoff]
+        );
+        if (!edge) {
+          // 剩余不足一批，一次删净
+          const r = await db.run("DELETE FROM keeper_runs WHERE created_at < ?", [cutoff]);
+          removed += Number(r?.affectedRows || 0);
+          break;
+        }
+        const r = await db.run("DELETE FROM keeper_runs WHERE created_at < ? AND id < ?", [cutoff, edge.id]);
+        removed += Number(r?.affectedRows || 0);
+      }
+      if (removed > 0) logRun("keeper", "ok", `keeper_runs pruned: ${removed} rows (keep 7d)`);
+    } catch (e) {
+      logRun("keeper", "error", `prune keeper_runs: ${String(e.message).slice(0, 100)}`);
+    }
+  }
+
   stop() {
     if (this.cronTask) this.cronTask.stop();
     if (this.catchUpTimer) clearTimeout(this.catchUpTimer);
     if (this.catchUpInterval) clearInterval(this.catchUpInterval);
+    if (this.pruneTimer) clearTimeout(this.pruneTimer);
+    if (this.pruneInterval) clearInterval(this.pruneInterval);
   }
 }
